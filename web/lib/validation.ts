@@ -55,9 +55,8 @@ export const SettingsSchema = z.object({
   keySnapThreshold: z.number().min(0).max(1).optional(),
   halfTime: z.boolean().optional(),
   compound: z.boolean().optional(),
-  // Disable MSAF structural segmentation — no A/B/C rehearsal marks on the PDF
-  // or in the MusicXML. Set this if MSAF mis-segments and the marks distract.
   skipSections: z.boolean().optional(),
+  deleteOnDownload: z.boolean().optional(),
 
   // Stems
   skipStems: z.boolean().optional(),
@@ -85,8 +84,6 @@ export const SettingsSchema = z.object({
 
   // ── Chord-detection library knobs ──
   barPhase:           z.boolean().optional(),
-  msafBoundariesId:   z.enum(["sf", "foote", "cnmf", "scluster", "vmo", "olda"]).optional(),
-  msafLabelsId:       z.enum(["fmc2d", "cnmf", "scluster"]).optional(),
   confidenceWarn:     z.number().min(0).max(1).optional(),
 
   // ── Stem-splitting library knobs ──

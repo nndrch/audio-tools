@@ -16,7 +16,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 //
 // Each subsection has a Primary block (always visible inside the section) and
 // a "Library tuning" expand for the long-tail knobs that pass straight through
-// to the underlying library (madmom / librosa / pyrubberband / MSAF / demucs).
+// to the underlying library (madmom / librosa / pyrubberband / allin1 / demucs).
 // ---------------------------------------------------------------------------
 
 export type AdvancedState = {
@@ -70,8 +70,7 @@ export type AdvancedState = {
   detectSections: boolean;
   confidenceWarn: string;
   barPhase: boolean;
-  msafBoundariesId: string;
-  msafLabelsId: string;
+  deleteOnDownload: boolean;
 
   // Stem Splitting
   skipStems: boolean;
@@ -149,8 +148,7 @@ export const DEFAULT_ADVANCED: AdvancedState = {
   detectSections: false,
   confidenceWarn: "0.45",
   barPhase: true,
-  msafBoundariesId: "sf",
-  msafLabelsId: "fmc2d",
+  deleteOnDownload: false,
 
   // Stem Splitting
   skipStems: false,
@@ -212,21 +210,6 @@ const DETECTOR_BACKEND_OPTIONS: Array<[string, string]> = [
   ["auto",    "Auto (madmom, then librosa)"],
   ["madmom",  "Force madmom"],
   ["librosa", "Force librosa"],
-];
-
-const MSAF_BOUNDARIES_OPTIONS: Array<[string, string]> = [
-  ["sf",       "sf — default"],
-  ["foote",    "foote"],
-  ["cnmf",     "cnmf"],
-  ["scluster", "scluster"],
-  ["vmo",      "vmo"],
-  ["olda",     "olda"],
-];
-
-const MSAF_LABELS_OPTIONS: Array<[string, string]> = [
-  ["fmc2d",    "fmc2d — default"],
-  ["cnmf",     "cnmf"],
-  ["scluster", "scluster"],
 ];
 
 const DEMUCS_DEVICE_OPTIONS: Array<[string, string]> = [
@@ -390,7 +373,7 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
               <Check label="Force 6/8 compound feel"     checked={value.compound} onChange={(v) => patch("compound", v)} />
             </Row>
             <Row>
-              <Check label="Detect song sections (A/B/C marks)" checked={value.detectSections} onChange={(v) => patch("detectSections", v)} />
+              <Check label="Detect song sections (Intro/Verse/Chorus…)" checked={value.detectSections} onChange={(v) => patch("detectSections", v)} />
             </Row>
 
             <SubLabel>Chart appearance</SubLabel>
@@ -423,20 +406,11 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
               </Hint>
             </ExpertKnobs>
 
-            <LibraryKnobs label="Library tuning — confidence, MSAF, bar phase">
+            <LibraryKnobs label="Library tuning — confidence, bar phase">
               <Row>
                 <NumberField label="Low-confidence flag (0–1)" value={value.confidenceWarn} onChange={(v) => patch("confidenceWarn", v)} />
                 <Check label="Phase-align chord grid to bar downbeats" checked={value.barPhase} onChange={(v) => patch("barPhase", v)} />
               </Row>
-              <Row>
-                <SelectField label="MSAF boundaries algorithm" value={value.msafBoundariesId} onChange={(v) => patch("msafBoundariesId", v)} options={MSAF_BOUNDARIES_OPTIONS} />
-                <SelectField label="MSAF labels algorithm"     value={value.msafLabelsId}     onChange={(v) => patch("msafLabelsId", v)}     options={MSAF_LABELS_OPTIONS} />
-              </Row>
-              <Hint>
-                MSAF picks out section boundaries (A / B / C marks). Different algorithms suit
-                different material — the defaults work for most pop & folk. Only matters when
-                &quot;Detect song sections&quot; is on.
-              </Hint>
             </LibraryKnobs>
           </Section>
 
@@ -498,6 +472,26 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
                 <SelectField label="Bit depth"                value={value.backingBitDepth} onChange={(v) => patch("backingBitDepth", v)} options={BACKING_BIT_DEPTH_OPTIONS} />
               </Row>
             </LibraryKnobs>
+          </Section>
+
+          {/* ─── 5. Storage ─── */}
+          <Section
+            title="Storage"
+            intro="Controls how generated files are handled after a job completes."
+          >
+            <Row>
+              <Check
+                label="Delete files after download"
+                checked={value.deleteOnDownload}
+                onChange={(v) => patch("deleteOnDownload", v)}
+              />
+            </Row>
+            <Hint>
+              When enabled, all generated files for a job — stabilised audio, chord chart,
+              stems, and ZIP — are permanently deleted from the server as soon as you
+              download the ZIP. Useful when running locally to avoid filling up disk space.
+              Without this, files are kept for 24 hours and then auto-deleted.
+            </Hint>
           </Section>
 
         </fieldset>
@@ -681,8 +675,8 @@ export function toSettingsPayload(a: AdvancedState) {
     keySnapThreshold:  num(a.keySnapThreshold),
     halfTime:          a.halfTime  || undefined,
     compound:          a.compound  || undefined,
-    // Sections are off by default; only call MSAF when the user opts in.
     skipSections:      a.detectSections ? undefined : true,
+    deleteOnDownload:  a.deleteOnDownload || undefined,
 
     skipStems:    a.skipStems || undefined,
     stems:        a.skipStems || allStems ? undefined : stems,
@@ -711,8 +705,6 @@ export function toSettingsPayload(a: AdvancedState) {
 
     // ── Chord-detection library knobs ──
     barPhase:           a.barPhase ? undefined : false,
-    msafBoundariesId:   a.msafBoundariesId && a.msafBoundariesId !== "sf" ? a.msafBoundariesId : undefined,
-    msafLabelsId:       a.msafLabelsId     && a.msafLabelsId     !== "fmc2d" ? a.msafLabelsId : undefined,
     confidenceWarn:     num(a.confidenceWarn),
 
     // ── Stem-splitting library knobs ──

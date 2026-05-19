@@ -157,8 +157,6 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
 
   // ── Chord-detection library knobs ──
   if (s.barPhase === false) args.push("--no-bar-phase");
-  if (s.msafBoundariesId && s.msafBoundariesId !== "sf") args.push("--msaf-boundaries-id", s.msafBoundariesId);
-  if (s.msafLabelsId && s.msafLabelsId !== "fmc2d") args.push("--msaf-labels-id", s.msafLabelsId);
   if (s.confidenceWarn !== undefined && s.confidenceWarn !== 0.45) args.push("--confidence-warn", String(s.confidenceWarn));
 
   // ── Stem-splitting library knobs ──

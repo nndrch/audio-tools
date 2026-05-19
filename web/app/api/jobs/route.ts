@@ -16,14 +16,12 @@ import {
 } from "@/lib/jobs";
 import { probeDurationSeconds } from "@/lib/ffprobe";
 import { startOrQueue } from "@/lib/pipeline";
-import { sweepOldJobs } from "@/lib/cleanup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   await ensureJobsRoot();
-  void sweepOldJobs().catch(() => { /* best-effort */ });
 
   let form: FormData;
   try {

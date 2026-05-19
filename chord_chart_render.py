@@ -691,134 +691,89 @@ def key_override_to_display(key_str: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Structural segmentation (MSAF)
+# Structural segmentation (allin1)
 # ---------------------------------------------------------------------------
 #
-# MSAF picks out section boundaries (intro/verse/chorus/etc.) from the audio
-# and gives each section a numeric cluster label. We translate those into
-# A / B / C / D rehearsal marks that appear above the chord chart, and snap
-# the second-based boundaries to bar starts so the marks line up cleanly.
+# allin1 runs as a venv_demucs subprocess in pipeline.py and writes a JSON
+# sidecar with named labels (Intro / Verse / Chorus / Bridge / Outro …).
+# Here we just read that sidecar and snap every boundary to the nearest
+# bar start from the madmom-derived beat grid.
 
 def detect_sections(
-    audio_path: str,
+    sections_json: str,
     bar_chords: list[dict],
-    boundaries_id: str = "sf",
-    labels_id: str = "fmc2d",
 ) -> list[dict]:
     """
-    Run MSAF on `audio_path` and return a list of section descriptors
+    Load allin1 output from `sections_json` and return section descriptors
     snapped to bar boundaries:
 
-        [{"label": "A", "start_bar": 1, "end_bar": 12,
-          "start_time": 0.0, "end_time": 24.3,
-          "raw_label": 4.0}, ...]
+        [{"label": "Chorus", "start_bar": 9, "end_bar": 16,
+          "start_time": 16.0, "end_time": 32.1}, ...]
 
-    The numeric labels MSAF outputs are clustered (repeated sections share
-    the same number); we map them to A, B, C, D... in order of first
-    appearance so the chart reads cleanly.
-
-    Returns [] on any error — MSAF is fragile on short or degenerate audio
-    and section labels are an enhancement, never a blocker.
+    Returns [] on any error — sections are an enhancement, never a blocker.
     """
-    if not bar_chords:
+    if not bar_chords or not sections_json:
         return []
-    try:
-        import warnings
-        warnings.filterwarnings("ignore")
-        # scipy.inf was removed; MSAF imports it at module load.
-        import math, scipy
-        if not hasattr(scipy, "inf"):
-            scipy.inf = math.inf
-        import os, tempfile
-        import msaf
-    except Exception as e:
-        print(f"  [sections] msaf import failed: {e}")
+
+    import json as _json
+
+    if not os.path.isfile(sections_json):
+        print(f"  [sections] JSON not found: {sections_json}")
         return []
 
     try:
-        # MSAF builds its working paths from `dirname(dirname(audio_file))`.
-        # Stage the audio inside a temp directory it can write to.
-        with tempfile.TemporaryDirectory() as work:
-            audio_dir = os.path.join(work, "ds", "audio")
-            os.makedirs(audio_dir)
-            staged = os.path.join(audio_dir, os.path.basename(audio_path))
-            os.symlink(os.path.abspath(audio_path), staged)
-            boundaries, raw_labels = msaf.process(
-                staged, boundaries_id=boundaries_id, labels_id=labels_id,
-            )
+        with open(sections_json) as f:
+            raw_segments: list[dict] = _json.load(f)
     except Exception as e:
-        print(f"  [sections] msaf.process failed: {e}")
+        print(f"  [sections] failed to read sections JSON: {e}")
         return []
 
-    if len(boundaries) < 2 or len(raw_labels) == 0:
+    if not raw_segments:
         return []
 
-    # Bar starts in seconds (for snapping).
     bar_times = [b["time"] for b in bar_chords]
     final_t = bar_times[-1] + (bar_times[-1] - bar_times[-2] if len(bar_times) >= 2 else 0.0)
 
     def snap_to_bar(t: float) -> int:
-        """Return the bar index (0-based) whose start is closest to t."""
-        best_idx = 0
-        best_diff = abs(bar_times[0] - t)
+        """Return the 0-based bar index whose start time is closest to t."""
+        best_idx, best_diff = 0, abs(bar_times[0] - t)
         for i, bt in enumerate(bar_times):
             d = abs(bt - t)
             if d < best_diff:
-                best_diff = d
-                best_idx = i
+                best_diff, best_idx = d, i
         return best_idx
 
-    # Map MSAF's numeric labels to letters by order of first appearance.
-    letter_map: dict[float, str] = {}
-    def letter_for(raw: float) -> str:
-        if raw not in letter_map:
-            letter_map[raw] = chr(ord("A") + len(letter_map))
-        return letter_map[raw]
-
     sections: list[dict] = []
-    for i, raw in enumerate(raw_labels):
-        seg_start_t = float(boundaries[i])
-        seg_end_t   = float(boundaries[i + 1]) if i + 1 < len(boundaries) else final_t
+    for i, seg in enumerate(raw_segments):
+        seg_start_t = float(seg["start"])
+        seg_end_t   = float(seg.get("end", final_t))
+        label       = str(seg.get("label", f"Part {i + 1}"))
 
         start_bar_idx = snap_to_bar(seg_start_t)
-        # End is exclusive — the next section's start. Use that bar minus 1
-        # for end_bar so adjacent sections don't overlap.
-        if i + 1 < len(raw_labels):
-            next_start_bar_idx = snap_to_bar(float(boundaries[i + 1]))
+        if i + 1 < len(raw_segments):
+            next_start_bar_idx = snap_to_bar(float(raw_segments[i + 1]["start"]))
             end_bar_idx = max(start_bar_idx, next_start_bar_idx - 1)
         else:
             end_bar_idx = len(bar_chords) - 1
 
-        # Drop sections shorter than 2 bars. MSAF often spits out 1-bar
-        # boundaries at the very start/end of a song; rendering them as
-        # rehearsal marks would clutter the chart without adding signal.
+        # Drop single-bar segments — they clutter the chart without adding signal.
         if end_bar_idx - start_bar_idx < 1:
             continue
-        # Merge into the previous section if the label is identical and they're
-        # adjacent — keeps the rehearsal marks meaningful instead of repeated.
-        letter = letter_for(float(raw))
-        if sections and sections[-1]["label"] == letter and sections[-1]["end_bar"] == start_bar_idx:
+
+        # Merge adjacent identical labels.
+        if sections and sections[-1]["label"] == label and sections[-1]["end_bar"] == start_bar_idx:
             sections[-1]["end_bar"] = end_bar_idx + 1
             sections[-1]["end_time"] = seg_end_t
             continue
+
         sections.append({
-            "label":      letter,
-            "start_bar":  start_bar_idx + 1,  # 1-indexed bar numbers
+            "label":      label,
+            "start_bar":  start_bar_idx + 1,  # 1-indexed
             "end_bar":    end_bar_idx + 1,
             "start_time": round(seg_start_t, 2),
             "end_time":   round(seg_end_t, 2),
-            "raw_label":  float(raw),
         })
 
-    # Re-letter from A so that the labels are contiguous even after filtering
-    # dropped some short sections from the middle of the original cluster set.
-    if sections:
-        contiguous: dict[str, str] = {}
-        for s in sections:
-            if s["label"] not in contiguous:
-                contiguous[s["label"]] = chr(ord("A") + len(contiguous))
-        for s in sections:
-            s["label"] = contiguous[s["label"]]
     return sections
 
 
@@ -1144,20 +1099,17 @@ Examples:
                         "(auto-detected for most 6/8 songs; use this flag as a manual override).")
     p.add_argument("--open",              action="store_true", help="Open PDF when done")
     p.add_argument("--keep-ly",           action="store_true", help="Keep the .ly source file")
-    p.add_argument("--skip-sections",     action="store_true", dest="skip_sections",
-                   help="Skip MSAF structural segmentation. The PDF and MusicXML "
-                        "will have no rehearsal marks. Use this if MSAF segments "
-                        "incorrectly or you don't care about section labels.")
+    p.add_argument("--sections-json",     default=None, dest="sections_json",
+                   help="Path to allin1 sections JSON written by pipeline.py. "
+                        "Omit to produce a chart with no rehearsal marks.")
+    p.add_argument("--sections-json-wait-s", type=int, default=0, dest="sections_json_wait_s",
+                   help="Seconds to poll for --sections-json to appear (for parallel execution). "
+                        "0 = don't wait (default).")
     # Library knobs
     lib = p.add_argument_group("Library knobs")
     lib.add_argument("--no-bar-phase",     action="store_false", dest="bar_phase",
                      help="Disable chord-grid phase alignment to bar downbeats")
     lib.set_defaults(bar_phase=True)
-    lib.add_argument("--msaf-boundaries-id", default="sf", dest="msaf_boundaries_id",
-                     help="MSAF boundary algorithm: sf, foote, cnmf, scluster, vmo, olda "
-                          "(default: sf)")
-    lib.add_argument("--msaf-labels-id",     default="fmc2d", dest="msaf_labels_id",
-                     help="MSAF labels algorithm: fmc2d, cnmf, scluster (default: fmc2d)")
     lib.add_argument("--ts-window-factor",   type=float, default=0.15, dest="ts_window_factor",
                      help="Time-signature autocorrelation window factor (default: 0.15)")
     lib.add_argument("--librosa-start-bpm",  type=float, default=120.0, dest="librosa_start_bpm",
@@ -1351,23 +1303,31 @@ def main() -> None:
     low_pct  = 100 * low_conf / max(len(all_segs), 1)
     print(f"  Low-confidence segments: {low_conf}/{len(all_segs)} ({low_pct:.0f}%)")
 
-    # Structural segmentation (sections / rehearsal marks). MSAF is fragile on
-    # short audio so we treat any failure as "no sections" rather than aborting.
+    # Structural segmentation — read allin1 JSON written by pipeline.py.
+    # When pipeline.py runs allin1 in parallel, the file may not exist yet;
+    # --sections-json-wait-s tells us to poll for it up to N seconds.
+    if args.sections_json and not os.path.isfile(args.sections_json) and args.sections_json_wait_s > 0:
+        import time as _time
+        deadline = _time.monotonic() + args.sections_json_wait_s
+        print(f"  [sections] Waiting up to {args.sections_json_wait_s}s for allin1 to finish …", flush=True)
+        while _time.monotonic() < deadline:
+            if os.path.isfile(args.sections_json):
+                break
+            _time.sleep(2)
+        else:
+            print("  [sections] Timed out — continuing without section marks")
+
     sections: list[dict] = []
-    if not args.skip_sections:
-        _emit("sections", 0.85, "detecting sections")
-        print("\n  Detecting sections (MSAF) …")
-        sections = detect_sections(
-            args.input, bar_chords,
-            boundaries_id=args.msaf_boundaries_id,
-            labels_id=args.msaf_labels_id,
-        )
+    if args.sections_json:
+        _emit("sections", 0.85, "loading sections")
+        print("\n  Loading sections (allin1) …")
+        sections = detect_sections(args.sections_json, bar_chords)
         if sections:
             print(f"  → {len(sections)} section(s): " + ", ".join(
                 f"{s['label']}(bars {s['start_bar']}-{s['end_bar']})" for s in sections
             ))
         else:
-            print(f"  → no sections detected (continuing without rehearsal marks)")
+            print("  → no sections detected (continuing without rehearsal marks)")
 
     madmom_bar_set  = set(madmom_substituted)
     key_snap_bar_set = set(key_snapped)

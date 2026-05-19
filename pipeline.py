@@ -81,7 +81,7 @@ Examples:
                        help="Beats per bar (default: auto)")
     chart.add_argument("--bars-per-line", type=int, default=4, dest="bars_per_line")
     chart.add_argument("--skip-sections", action="store_true", dest="skip_sections",
-                       help="Skip MSAF structural segmentation (no A/B/C rehearsal marks).")
+                       help="Skip allin1 structural segmentation (no section rehearsal marks).")
     chart.add_argument("--no-bpm",          action="store_true", help="Omit BPM from chart subtitle")
     chart.add_argument("--no-key",          action="store_true", help="Omit key from chart subtitle")
     chart.add_argument("--no-meter",        action="store_true", help="Omit meter from chart subtitle")
@@ -147,10 +147,6 @@ Examples:
     cd.add_argument("--no-bar-phase",        action="store_false", dest="bar_phase",
                     help="Disable chord-grid phase alignment to bar downbeats")
     p.set_defaults(bar_phase=True)
-    cd.add_argument("--msaf-boundaries-id",  default="sf",    dest="msaf_boundaries_id",
-                    help="MSAF boundary algorithm (default: sf)")
-    cd.add_argument("--msaf-labels-id",      default="fmc2d", dest="msaf_labels_id",
-                    help="MSAF labels algorithm (default: fmc2d)")
     cd.add_argument("--confidence-warn",     type=float, default=0.45, dest="confidence_warn",
                     help="Confidence below which a chord is flagged '?' (default: 0.45)")
 
@@ -283,13 +279,15 @@ def main() -> None:
         sys.exit(f"File not found: {args.input}")
 
     script_dir      = os.path.dirname(os.path.abspath(__file__))
-    crema_python    = os.path.join(script_dir, "venv_crema",  "bin", "python3.11")
-    demucs_python   = os.path.join(script_dir, "venv_demucs", "bin", "python3.11")
+    crema_python    = os.path.join(script_dir, "venv_crema",   "bin", "python3.11")
+    demucs_python   = os.path.join(script_dir, "venv_demucs",  "bin", "python3.11")
+    allin1_python   = os.path.join(script_dir, "venv_allin1",  "bin", "python3.11")
     stabilizer      = os.path.join(script_dir, "beat_stabilizer.py")
     chart_render    = os.path.join(script_dir, "chord_chart_render.py")
+    allin1_runner   = os.path.join(script_dir, "run_allin1.py")
     stem_splitter   = os.path.join(script_dir, "stem_splitter.py")
 
-    for venv, name in [(crema_python, "venv_crema"), (demucs_python, "venv_demucs")]:
+    for venv, name in [(crema_python, "venv_crema"), (demucs_python, "venv_demucs"), (allin1_python, "venv_allin1")]:
         if not os.path.isfile(venv):
             sys.exit(f"{name} not found at {venv}\nRun  bash setup.sh  first.")
 
@@ -352,6 +350,19 @@ def main() -> None:
             "stabilize", *ranges["stabilize"],
         )
 
+    # ── allin1 section detection — runs in parallel with chord chart ────────
+    # allin1 internally runs Demucs, which takes ~3-5 min on CPU.  Starting it
+    # as a background process alongside chord_chart_render (which takes ~5-8 min
+    # for crema + madmom) hides the allin1 cost entirely on typical songs.
+    # chord_chart_render polls for the JSON file via --sections-json-wait-s.
+    sections_json = os.path.join(out_dir, input_base + "_sections.json")
+    allin1_proc: subprocess.Popen | None = None
+    if not args.skip_sections:
+        print("\n[pipeline] Starting section detection (allin1) in background …")
+        allin1_proc = subprocess.Popen(
+            [allin1_python, allin1_runner, "-i", stabilised, "-o", sections_json],
+        )
+
     # ── Step 2 / 3  —  Chord chart ──────────────────────────
     chart_out = os.path.join(out_dir, input_base + "_chord_chart")
     cmd = [
@@ -375,12 +386,11 @@ def main() -> None:
     if args.key_snap_threshold != 0.65:       cmd += ["--key-snap-threshold", str(args.key_snap_threshold)]
     if args.half_time:                        cmd += ["--half-time"]
     if args.compound:                         cmd += ["--compound"]
-    if args.skip_sections:                    cmd += ["--skip-sections"]
+    if not args.skip_sections:
+        cmd += ["--sections-json", sections_json, "--sections-json-wait-s", "600"]
     if args.open:                             cmd += ["--open"]
     # Chord-detection library knobs
     if not args.bar_phase:                    cmd += ["--no-bar-phase"]
-    if args.msaf_boundaries_id != "sf":       cmd += ["--msaf-boundaries-id", args.msaf_boundaries_id]
-    if args.msaf_labels_id != "fmc2d":        cmd += ["--msaf-labels-id", args.msaf_labels_id]
     if args.confidence_warn != 0.45:          cmd += ["--threshold", str(args.confidence_warn)]
     # Beat-detector knobs (also used by chord_chart_render's own beat detection)
     if args.ts_window_factor != 0.15:         cmd += ["--ts-window-factor", str(args.ts_window_factor)]
@@ -392,6 +402,12 @@ def main() -> None:
         cmd, "STEP 2 / 3  —  Chord Chart",
         "chord", *ranges["chord"],
     )
+
+    # allin1 should already be done (chord chart takes longer), but clean up
+    # just in case the song was very short or sections-json-wait-s expired.
+    if allin1_proc is not None and allin1_proc.poll() is None:
+        print("[pipeline] Waiting for allin1 to finish …")
+        allin1_proc.wait()
 
     # ── Step 3 / 3  —  Stem splitting ───────────────────────
     if args.skip_stems:

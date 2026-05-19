@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { readStatus, zipPath } from "@/lib/jobs";
+import { readStatus, zipPath, jobDir } from "@/lib/jobs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,8 +25,15 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   const baseName = path.basename(status.filename, status.inputExt) || "audio-tools";
   const downloadName = `${baseName}.zip`;
 
-  // Stream the file
   const stream = fs.createReadStream(zip);
+
+  if (status.settings.deleteOnDownload) {
+    const dir = jobDir(params.id);
+    stream.on("close", () => {
+      fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    });
+  }
+
   // @ts-expect-error — Node Readable is acceptable here at runtime
   return new Response(stream, {
     status: 200,
