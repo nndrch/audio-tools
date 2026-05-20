@@ -82,6 +82,12 @@ Examples:
     chart.add_argument("--bars-per-line", type=int, default=4, dest="bars_per_line")
     chart.add_argument("--skip-sections", action="store_true", dest="skip_sections",
                        help="Skip allin1 structural segmentation (no section rehearsal marks).")
+    chart.add_argument("--section-threshold", type=float, default=0.0, dest="section_threshold",
+                       help=(
+                           "Boundary-strength threshold for allin1 section detection "
+                           "(default: 0.0 = accept every local peak). Higher values produce "
+                           "fewer but more confident sections. Typical useful range: 0.0–0.5."
+                       ))
     chart.add_argument("--no-bpm",          action="store_true", help="Omit BPM from chart subtitle")
     chart.add_argument("--no-key",          action="store_true", help="Omit key from chart subtitle")
     chart.add_argument("--no-meter",        action="store_true", help="Omit meter from chart subtitle")
@@ -349,18 +355,33 @@ def main() -> None:
             cmd, "STEP 1 / 3  —  Beat Stabilization",
             "stabilize", *ranges["stabilize"],
         )
+        if not os.path.isfile(stabilised):
+            sys.exit(
+                f"\n✗  Beat stabilizer reported success but did not write the output file:\n"
+                f"   {stabilised}\n"
+                f"   This is unexpected. Please try again."
+            )
 
     # ── allin1 section detection — runs in parallel with chord chart ────────
     # allin1 internally runs Demucs, which takes ~3-5 min on CPU.  Starting it
     # as a background process alongside chord_chart_render (which takes ~5-8 min
     # for crema + madmom) hides the allin1 cost entirely on typical songs.
     # chord_chart_render polls for the JSON file via --sections-json-wait-s.
+    # stdout=None inherits the parent pipe so the web UI log receives allin1 lines.
     sections_json = os.path.join(out_dir, input_base + "_sections.json")
     allin1_proc: subprocess.Popen | None = None
     if not args.skip_sections:
         print("\n[pipeline] Starting section detection (allin1) in background …")
+        print("[pipeline] Note: first run downloads ~1.5 GB model weights — may take extra time.")
+        sys.stdout.flush()
+        _emit_global("sections", ranges["chord"][0], "section detection running in background")
+        allin1_cmd = [allin1_python, allin1_runner, "-i", stabilised, "-o", sections_json]
+        if args.section_threshold:
+            allin1_cmd += ["--section-threshold", str(args.section_threshold)]
         allin1_proc = subprocess.Popen(
-            [allin1_python, allin1_runner, "-i", stabilised, "-o", sections_json],
+            allin1_cmd,
+            stdout=None,   # inherit — allin1 log lines go to the same pipe
+            stderr=None,
         )
 
     # ── Step 2 / 3  —  Chord chart ──────────────────────────
@@ -407,7 +428,10 @@ def main() -> None:
     # just in case the song was very short or sections-json-wait-s expired.
     if allin1_proc is not None and allin1_proc.poll() is None:
         print("[pipeline] Waiting for allin1 to finish …")
+        sys.stdout.flush()
         allin1_proc.wait()
+    if allin1_proc is not None:
+        _emit_global("sections", ranges["chord"][1], "section detection complete")
 
     # ── Step 3 / 3  —  Stem splitting ───────────────────────
     if args.skip_stems:

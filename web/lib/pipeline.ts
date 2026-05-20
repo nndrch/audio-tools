@@ -23,6 +23,7 @@ const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
   start: "Starting…",
   stabilize: "Stabilizing beats…",
+  sections: "Detecting song sections…",
   chord: "Generating chord chart…",
   stems: "Splitting stems…",
   finalize: "Packaging download…",
@@ -120,7 +121,7 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
   if (s.add7th)                 args.push("--add-7th");
   if (s.midBarThreshold !== undefined && s.midBarThreshold !== 0.80)
     args.push("--mid-bar-threshold", String(s.midBarThreshold));
-  if (s.madmomFallback === false) args.push("--no-madmom-fallback");
+  if (s.madmomFallback !== true)  args.push("--no-madmom-fallback");
   if (s.madmomThreshold !== undefined && s.madmomThreshold !== 0.70)
     args.push("--madmom-threshold", String(s.madmomThreshold));
   if (s.keyTiebreak)            args.push("--key-tiebreak");
@@ -130,6 +131,8 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
   if (s.halfTime)               args.push("--half-time");
   if (s.compound)               args.push("--compound");
   if (s.skipSections)           args.push("--skip-sections");
+  if (s.sectionThreshold !== undefined && s.sectionThreshold !== 0)
+    args.push("--section-threshold", String(s.sectionThreshold));
 
   // Stems
   if (s.skipStems)              args.push("--skip-stems");

@@ -68,6 +68,7 @@ export type AdvancedState = {
   halfTime: boolean;
   compound: boolean;
   detectSections: boolean;
+  sectionThreshold: string;
   confidenceWarn: string;
   barPhase: boolean;
   deleteOnDownload: boolean;
@@ -138,7 +139,7 @@ export const DEFAULT_ADVANCED: AdvancedState = {
   noMeter: false,
   add7th: false,
   midBarThreshold: "0.80",
-  madmomFallback: true,
+  madmomFallback: false,
   madmomThreshold: "0.70",
   keyTiebreak: false,
   keySnap: false,
@@ -146,6 +147,7 @@ export const DEFAULT_ADVANCED: AdvancedState = {
   halfTime: false,
   compound: false,
   detectSections: false,
+  sectionThreshold: "",
   confidenceWarn: "0.45",
   barPhase: true,
   deleteOnDownload: false,
@@ -360,7 +362,7 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
           >
             <Row>
               <Check label="Keep 7th qualities (maj7, m7, dom7)"     checked={value.add7th}          onChange={(v) => patch("add7th", v)} />
-              <Check label="Secondary model for low-confidence bars" checked={value.madmomFallback}  onChange={(v) => patch("madmomFallback", v)} />
+              <Check label="Secondary model for low-confidence bars (slower)" checked={value.madmomFallback}  onChange={(v) => patch("madmomFallback", v)} />
             </Row>
             <Row>
               <Check label="Refine key using chord frequencies" checked={value.keyTiebreak} onChange={(v) => patch("keyTiebreak", v)} />
@@ -375,6 +377,21 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
             <Row>
               <Check label="Detect song sections (Intro/Verse/Chorus…)" checked={value.detectSections} onChange={(v) => patch("detectSections", v)} />
             </Row>
+            {value.detectSections && (
+              <>
+                <Row>
+                  <NumberField
+                    label="Section boundary threshold (0–1, blank = 0)"
+                    value={value.sectionThreshold}
+                    onChange={(v) => patch("sectionThreshold", v)}
+                    step="0.05"
+                  />
+                </Row>
+                <Hint>
+                  Minimum boundary-strength score to accept a section cut. 0 = every local peak (more sections). Raise toward 0.5 for fewer, more confident splits. Only adjust if sections appear in the wrong places.
+                </Hint>
+              </>
+            )}
 
             <SubLabel>Chart appearance</SubLabel>
             <Row>
@@ -676,6 +693,7 @@ export function toSettingsPayload(a: AdvancedState) {
     halfTime:          a.halfTime  || undefined,
     compound:          a.compound  || undefined,
     skipSections:      a.detectSections ? undefined : true,
+    sectionThreshold:  num(a.sectionThreshold),
     deleteOnDownload:  a.deleteOnDownload || undefined,
 
     skipStems:    a.skipStems || undefined,

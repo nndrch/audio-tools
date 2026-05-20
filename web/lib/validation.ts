@@ -56,6 +56,7 @@ export const SettingsSchema = z.object({
   halfTime: z.boolean().optional(),
   compound: z.boolean().optional(),
   skipSections: z.boolean().optional(),
+  sectionThreshold: z.number().min(0).max(1).optional(),
   deleteOnDownload: z.boolean().optional(),
 
   // Stems

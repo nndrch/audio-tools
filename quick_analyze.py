@@ -60,13 +60,46 @@ _DROPDOWN_LY_MINOR = {
 
 
 def detect_bpm(y: np.ndarray, sr: int) -> tuple[float | None, np.ndarray]:
-    """Return (bpm, beat_times) using librosa's default beat tracker."""
+    """Return (bpm, beat_times) using librosa's default beat tracker.
+
+    Includes an octave correction: librosa commonly locks onto 8th notes for
+    half-time grooves, returning double the quarter-note tempo.  We detect
+    this by checking whether the detected beats alternate between strong and
+    weak onsets — the hallmark of 8th-note tracking.  If a clear alternating
+    pattern is found (one set of every-other beats is ≥ 25 % stronger on
+    average), we halve the BPM and keep only the stronger beat set.
+    """
     import librosa
 
     try:
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units="frames")
-        beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+        hop = 512
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+
+        tempo, beat_frames = librosa.beat.beat_track(
+            onset_envelope=onset_env, sr=sr, units="frames", hop_length=hop
+        )
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
         bpm_val = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
+
+        # Octave correction — only worth checking when BPM is high enough that
+        # double-tracking is plausible, and we have enough beats to compare.
+        if bpm_val is not None and bpm_val > 120 and len(beat_times) >= 8:
+            idxs = np.clip(
+                librosa.time_to_frames(beat_times, sr=sr, hop_length=hop),
+                0, len(onset_env) - 1,
+            ).astype(int)
+            strengths  = onset_env[idxs]
+            even_mean  = float(np.mean(strengths[::2]))   # beats 0, 2, 4, …
+            odd_mean   = float(np.mean(strengths[1::2]))  # beats 1, 3, 5, …
+            stronger   = max(even_mean, odd_mean)
+            weaker     = min(even_mean, odd_mean)
+
+            # If one set is clearly stronger (≥ 25 % gap), the tracker found
+            # 8th notes — the "strong" set is the true quarter-note pulse.
+            if weaker > 0 and stronger / weaker >= 1.25:
+                bpm_val    = bpm_val / 2.0
+                beat_times = beat_times[::2] if even_mean >= odd_mean else beat_times[1::2]
+
         return bpm_val, np.asarray(beat_times, dtype=float)
     except Exception:
         return None, np.zeros(0, dtype=float)
