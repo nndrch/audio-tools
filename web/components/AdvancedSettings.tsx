@@ -76,6 +76,14 @@ export type AdvancedState = {
   // skipStems-onChange auto-downgrades to "hpss".
   hpssMode: string;
   hpssMargin: string;
+  // Bass-anchored root: overrides chord roots using the bass stem's pitch.
+  // Requires stems — disabled when skipStems is true. Auto-turns-off when the
+  // user disables stems mid-flight so the run can't enter an invalid state.
+  bassAnchor: boolean;
+  bassAnchorMargin: string;
+  // Section-aware chord consistency: forces same-named sections to share
+  // their progression. Requires section detection — disabled when off.
+  sectionConsistency: boolean;
   deleteOnDownload: boolean;
 
   // Stem Splitting
@@ -157,6 +165,11 @@ export const DEFAULT_ADVANCED: AdvancedState = {
   barPhase: true,
   hpssMode: "hpss",
   hpssMargin: "3.0",
+  // Default OFF for both new features — they need user opt-in until quality
+  // baseline is established with real songs.
+  bassAnchor: false,
+  bassAnchorMargin: "0.55",
+  sectionConsistency: false,
   deleteOnDownload: false,
 
   // Stem Splitting
@@ -387,6 +400,49 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
               HPSS = Harmonic-Percussive Source Separation. Operates on the time-aligned audio
               before crema sees it. Key and beat detection still use the raw signal.
             </Hint>
+
+            <SubLabel>Quality refinements</SubLabel>
+            <Row>
+              <Check
+                label={
+                  value.skipStems
+                    ? "Anchor chord roots to bass stem — enable Stem Splitting first"
+                    : "Anchor chord roots to bass stem (uses isolated bass for the root)"
+                }
+                checked={value.bassAnchor && !value.skipStems}
+                onChange={(v) => {
+                  if (value.skipStems) return; // hard-disable when no stems
+                  patch("bassAnchor", v);
+                }}
+              />
+            </Row>
+            <Hint>
+              When the bass stem clearly plays one note, that pitch becomes the chord root
+              (quality is kept). Fixes relative-minor and inversion confusions that crema
+              gets wrong most often. Requires Stem Splitting — Demucs runs before chord
+              detection (~30 s – 2 min added).
+            </Hint>
+            <Row>
+              <Check
+                label={
+                  !value.detectSections
+                    ? "Force same-named sections to share progressions — enable section detection first"
+                    : "Force same-named sections to share progressions (Chorus 1 = Chorus 2)"
+                }
+                checked={value.sectionConsistency && value.detectSections}
+                onChange={(v) => {
+                  if (!value.detectSections) return; // hard-disable when sections are off
+                  patch("sectionConsistency", v);
+                }}
+              />
+            </Row>
+            <Hint>
+              Pure post-processing — costs nothing. For each section label that appears more
+              than once (e.g. two Verses, three Choruses), copies the highest-confidence
+              chord progression to all instances. Only runs on instances of identical bar
+              length; varying-length sections are left untouched.
+            </Hint>
+
             <Row>
               <Check label="Keep 7th qualities (maj7, m7, dom7)"     checked={value.add7th}          onChange={(v) => patch("add7th", v)} />
               <Check label="Secondary model for low-confidence bars (slower)" checked={value.madmomFallback}  onChange={(v) => patch("madmomFallback", v)} />
@@ -455,6 +511,16 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
                   />
                 </Row>
               )}
+              {value.bassAnchor && !value.skipStems && (
+                <Row>
+                  <NumberField
+                    label="Bass-anchor margin (0.3–0.95; higher = bass must be cleaner to override)"
+                    value={value.bassAnchorMargin}
+                    onChange={(v) => patch("bassAnchorMargin", v)}
+                    step="0.05"
+                  />
+                </Row>
+              )}
               <Hint>
                 Confidence thresholds. Only adjust if the chart consistently misfires on your music.
               </Hint>
@@ -486,10 +552,16 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
                 label="Skip stems entirely (much faster)"
                 checked={value.skipStems}
                 onChange={(v) => {
-                  // hpss-no-drums depends on stems; downgrade to plain HPSS
-                  // when the user takes stems away so the run won't error out.
-                  if (v && value.hpssMode === "hpss-no-drums") {
-                    onChange({ ...value, skipStems: true, hpssMode: "hpss" });
+                  // Two stems-dependent features may need to be reset when the
+                  // user takes stems away: hpss-no-drums (downgrade to plain
+                  // HPSS) and bass-anchor (turn off).  Coalesce into a single
+                  // state update so we never produce an invalid intermediate
+                  // (skipStems=true but a stems-dependent feature still on).
+                  if (v) {
+                    const next = { ...value, skipStems: true };
+                    if (value.hpssMode === "hpss-no-drums") next.hpssMode = "hpss";
+                    if (value.bassAnchor)                   next.bassAnchor = false;
+                    onChange(next);
                   } else {
                     patch("skipStems", v);
                   }
@@ -787,6 +859,13 @@ export function toSettingsPayload(a: AdvancedState) {
                               ? undefined
                               : (a.hpssMode as "off" | "hpss-no-drums")),
     hpssMargin:         num(a.hpssMargin),
+    // Bass-anchor only emitted when stems are on.  UI guards prevent the
+    // checkbox going true with skipStems=true, but mirror the guard here so
+    // any stale state from older sessions can't fire an invalid pipeline.
+    bassAnchor:         a.bassAnchor && !a.skipStems ? true : undefined,
+    bassAnchorMargin:   num(a.bassAnchorMargin),
+    // Section consistency only emitted when section detection is on.
+    sectionConsistency: a.sectionConsistency && a.detectSections ? true : undefined,
 
     // ── Stem-splitting library knobs ──
     demucsShifts:      int(a.demucsShifts),

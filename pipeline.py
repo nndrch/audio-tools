@@ -162,6 +162,15 @@ Examples:
                          "'hpss-no-drums' = also subtract the drums stem (requires stems).")
     cd.add_argument("--hpss-margin",         type=float, default=3.0, dest="hpss_margin",
                     help="HPSS margin (higher = more aggressive separation; default: 3.0)")
+    cd.add_argument("--bass-anchor",         action="store_true", dest="bass_anchor",
+                    help="Use the bass stem's dominant pitch to correct chord roots "
+                         "(requires stems). Most useful when crema confuses a major chord "
+                         "with its relative minor or labels an inversion as the bass note's "
+                         "chord. Adds Demucs time when stems aren't already enabled-first.")
+    cd.add_argument("--section-consistency", action="store_true", dest="section_consistency",
+                    help="Force same-named sections (Chorus 1, Chorus 2, …) to share their "
+                         "chord progression by voting per bar position. Requires section "
+                         "detection to be on. Pure post-processing — costs nothing.")
 
     # ── Stem splitter ────────────────────────────────────────
     stems = p.add_argument_group("Stem splitter")
@@ -310,20 +319,28 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     title = args.title or input_base
 
-    # ── HPSS-no-drums validation ───────────────────────────
-    # Mode 3 needs the drums stem before chord detection runs.  If the user
-    # disabled stems we surface a clear error instead of silently degrading.
-    if args.hpss_mode == "hpss-no-drums" and args.skip_stems:
+    # ── Validation for features that need stems before chord ───────────────
+    # Both `hpss-no-drums` (needs drums.wav) and `bass-anchor` (needs bass.wav)
+    # require stems to be produced before the chord step.  Skip-stems makes
+    # this impossible — surface a clear error instead of silently degrading.
+    _stems_dependent = []
+    if args.hpss_mode == "hpss-no-drums": _stems_dependent.append("--hpss-mode=hpss-no-drums")
+    if args.bass_anchor:                  _stems_dependent.append("--bass-anchor")
+    if _stems_dependent and args.skip_stems:
         sys.exit(
-            "✗  --hpss-mode=hpss-no-drums requires stem splitting to be enabled "
-            "(it needs drums.wav before chord detection)."
+            f"✗  {', '.join(_stems_dependent)} requires stem splitting to be enabled "
+            "(needs the bass/drums stems before chord detection)."
         )
 
     # ── Global progress allocation ─────────────────────────
     # Default ranges: stabilize 0–10, chord 10–40, stems 40–100.
-    # When stems run BEFORE chord (hpss-no-drums), swap their windows so the
-    # global bar stays monotonic: stabilize 0–10, stems 10–70, chord 70–100.
-    stems_first = (args.hpss_mode == "hpss-no-drums") and not args.skip_stems
+    # When stems run BEFORE chord (hpss-no-drums OR bass-anchor), swap their
+    # windows so the global bar stays monotonic: stabilize 0–10, stems 10–70,
+    # chord 70–100.  Same constraint, same code path.
+    stems_first = (
+        (args.hpss_mode == "hpss-no-drums" or args.bass_anchor)
+        and not args.skip_stems
+    )
     weights = {
         "stabilize": 0.0 if args.skip_stabilize else 10.0,
         "chord":     30.0,
@@ -388,6 +405,7 @@ def main() -> None:
     stems_out          = os.path.join(out_dir, input_base + "_stems")
     backing_track_path = os.path.join(out_dir, input_base + "_backing_track.wav")
     drums_wav_path     = os.path.join(stems_out, "drums.wav")
+    bass_wav_path      = os.path.join(stems_out, "bass.wav")
     stems_done = False
 
     def _build_stems_cmd(stems_filter: str | None) -> list[str]:
@@ -419,24 +437,36 @@ def main() -> None:
         if _PROGRESS_JSON: cmd += ["--progress-json"]
         return cmd
 
-    # ── Step 2 / 3 (or 3 / 3) — early stems pass for hpss-no-drums ─────────
-    # When chord detection needs drums removed, Demucs has to run first.  We
-    # also silently add 'drums' to the user's stem filter if absent, so
-    # drums.wav is actually written.
+    # ── Step 2 / 3 (or 3 / 3) — early stems pass when chord step needs stems ─
+    # Triggered when --hpss-mode=hpss-no-drums (needs drums.wav) or
+    # --bass-anchor (needs bass.wav).  Both stems are silently added to the
+    # user's stem filter if absent so the required WAVs always exist.
     if stems_first:
         stems_filter = args.stems
-        if stems_filter is not None and "drums" not in stems_filter.split(","):
-            stems_filter = stems_filter + ",drums"
-            print(f"[pipeline] hpss-no-drums: adding 'drums' to stem filter → {stems_filter}")
+        needed = []
+        if args.hpss_mode == "hpss-no-drums": needed.append("drums")
+        if args.bass_anchor:                  needed.append("bass")
+        if stems_filter is not None:
+            current = stems_filter.split(",")
+            added = [s for s in needed if s not in current]
+            if added:
+                stems_filter = ",".join(current + added)
+                print(f"[pipeline] chord features need {added}: stem filter → {stems_filter}")
+        why = []
+        if args.hpss_mode == "hpss-no-drums": why.append("HPSS drum removal")
+        if args.bass_anchor:                  why.append("bass-anchor")
         run_with_progress(
             _build_stems_cmd(stems_filter),
-            "STEP 2 / 3  —  Stem Splitting (early, for HPSS drum removal)",
+            f"STEP 2 / 3  —  Stem Splitting (early, for {' + '.join(why)})",
             "stems", *ranges["stems"],
         )
         stems_done = True
-        if not os.path.isfile(drums_wav_path):
+        if args.hpss_mode == "hpss-no-drums" and not os.path.isfile(drums_wav_path):
             print(f"[pipeline] WARNING: expected drums stem not produced at {drums_wav_path} — "
                   "chord step will fall back to plain HPSS.")
+        if args.bass_anchor and not os.path.isfile(bass_wav_path):
+            print(f"[pipeline] WARNING: expected bass stem not produced at {bass_wav_path} — "
+                  "chord step will skip bass-anchor.")
 
     # ── allin1 section detection — runs in parallel with chord chart ────────
     # allin1 internally runs Demucs, which takes ~3-5 min on CPU.  Starting it
@@ -493,6 +523,10 @@ def main() -> None:
     if args.hpss_mode != "hpss":              cmd += ["--hpss-mode", args.hpss_mode]
     if args.hpss_margin != 3.0:               cmd += ["--hpss-margin", str(args.hpss_margin)]
     if args.hpss_mode == "hpss-no-drums":     cmd += ["--drums-wav", drums_wav_path]
+    # Bass-anchored root correction (needs bass.wav from the early stems pass)
+    if args.bass_anchor:                      cmd += ["--bass-anchor", "--bass-wav", bass_wav_path]
+    # Section-aware chord consistency (post-processing; needs sections-json)
+    if args.section_consistency:              cmd += ["--section-consistency"]
     # Beat-detector knobs (also used by chord_chart_render's own beat detection)
     if args.ts_window_factor != 0.15:         cmd += ["--ts-window-factor", str(args.ts_window_factor)]
     if args.librosa_start_bpm != 120.0:       cmd += ["--librosa-start-bpm", str(args.librosa_start_bpm)]

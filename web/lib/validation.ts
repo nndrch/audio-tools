@@ -88,6 +88,13 @@ export const SettingsSchema = z.object({
   confidenceWarn:     z.number().min(0).max(1).optional(),
   hpssMode:           z.enum(["off", "hpss", "hpss-no-drums"]).optional(),
   hpssMargin:         z.number().min(0.1).max(20).optional(),
+  // Bass-anchored root: overrides crema's chord root with the bass stem's
+  // dominant pitch when chroma confidence is high. Requires stems.
+  bassAnchor:         z.boolean().optional(),
+  bassAnchorMargin:   z.number().min(0.3).max(0.95).optional(),
+  // Section-aware chord consistency: forces same-named sections to share
+  // their progression. Requires section detection.
+  sectionConsistency: z.boolean().optional(),
 
   // ── Stem-splitting library knobs ──
   demucsShifts:      z.number().int().min(1).max(10).optional(),

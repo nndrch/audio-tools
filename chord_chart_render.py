@@ -1133,10 +1133,234 @@ Examples:
     lib.add_argument("--hpss-margin",      type=float, default=3.0, dest="hpss_margin",
                      help="librosa.effects.hpss margin (higher = more aggressive harmonic/"
                           "percussive separation; default: 3.0)")
+    # ── Bass-stem-anchored root correction ──
+    # Requires stems to be available before chord detection.  pipeline.py
+    # arranges this (stems_first) and points us at the bass WAV via --bass-wav.
+    lib.add_argument("--bass-anchor",       action="store_true", dest="bass_anchor",
+                     help="Override chord roots using the bass stem's dominant pitch "
+                          "(requires --bass-wav). Corrects relative-minor / inversion "
+                          "confusions which crema often gets wrong.")
+    lib.add_argument("--bass-wav",          default=None, dest="bass_wav",
+                     help="Path to bass stem WAV (used when --bass-anchor is set).")
+    lib.add_argument("--bass-anchor-margin", type=float, default=0.55, dest="bass_anchor_margin",
+                     help="Minimum chroma confidence (top-1 / (top-1+top-2)) for the bass "
+                          "to override the chord root (default: 0.55)")
+    # ── Section-aware chord consistency ──
+    # Pure post-processing: groups bars by section label (--sections-json must
+    # be set) and forces same-named sections to share the highest-confidence
+    # chord progression at each position.  No effect when sections are absent
+    # or each label appears only once.
+    lib.add_argument("--section-consistency", action="store_true", dest="section_consistency",
+                     help="Force same-named sections (e.g. Chorus 1 and Chorus 2) to share "
+                          "their chord progression by voting per bar position. Requires "
+                          "section detection (--sections-json).")
 
     p.add_argument("--progress-json",     action="store_true", dest="progress_json",
                    help="Emit machine-readable PROGRESS JSON lines on stdout")
     return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Bass-stem-anchored root correction
+# ---------------------------------------------------------------------------
+#
+# Chord-detection errors split roughly into (a) wrong root and (b) wrong
+# quality.  Root errors hurt the most musically and are the easy ones to fix:
+# the bass note pins the chord root ~85 % of the time in pop / rock / folk.
+#
+# When stems are produced before chord detection (always true with this option
+# enabled — pipeline.py forces stems_first and adds 'bass' to the stem filter),
+# we recompute a per-segment dominant pitch class from the isolated bass WAV
+# and override crema's root when:
+#
+#   1. the bass chroma is unambiguous (top-1 / (top-1 + top-2) ≥ margin), and
+#   2. the bass pitch class differs from the chord root crema picked.
+#
+# Quality is preserved.  E.g. crema "Dm:7" + bass detects F → relabel "Fm:7"
+# only if the user wants that; we instead keep quality unchanged: "F:m7".  In
+# practice this corrects relative-minor / first-inversion confusions which
+# crema gets wrong most often.
+
+def _apply_bass_anchor(
+    bar_chords: list[dict],
+    bass_wav: str | None,
+    sample_rate: int,
+    margin_threshold: float = 0.55,
+) -> tuple[list[dict], list[int]]:
+    """
+    Override chord roots in `bar_chords` using the bass stem's dominant pitch.
+
+    Operates per segment (so a bar with a mid-bar split gets two independent
+    bass-anchor checks).  Returns (updated_bar_chords, list_of_changed_bars).
+
+    No-op if bass_wav is missing, the file doesn't exist, or chroma is too
+    ambiguous (no clear single dominant pitch class).
+    """
+    if not bar_chords or not bass_wav or not os.path.isfile(bass_wav):
+        return bar_chords, []
+
+    import librosa
+    print(f"  [bass-anchor] loading {os.path.basename(bass_wav)} …")
+    y_bass, sr_bass = load_audio_mono(bass_wav, sample_rate)
+    # Bass is typically <300 Hz; chroma_cqt with default fmin (~32.7 Hz) covers it
+    chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr_bass)
+    frame_times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sr_bass)
+
+    # Estimate bar duration to bound the last bar's window
+    if len(bar_chords) >= 2:
+        bar_duration = bar_chords[1]["time"] - bar_chords[0]["time"]
+    else:
+        bar_duration = 2.0
+
+    changed_bars: set[int] = set()
+    for i, bar in enumerate(bar_chords):
+        bar_start = bar["time"]
+        bar_end   = (bar_chords[i + 1]["time"]
+                     if i + 1 < len(bar_chords) else bar_start + bar_duration)
+        bar_dur   = bar_end - bar_start
+        total_beats = sum(s["beats"] for s in bar["segments"])
+        if total_beats == 0:
+            continue
+        beat_dur = bar_dur / total_beats
+
+        cur_t = bar_start
+        new_segments = []
+        for seg in bar["segments"]:
+            seg_start = cur_t
+            seg_end   = cur_t + seg["beats"] * beat_dur
+            cur_t     = seg_end
+
+            mask = (frame_times >= seg_start) & (frame_times < seg_end)
+            if not mask.any():
+                new_segments.append(seg)
+                continue
+
+            seg_chroma = chroma[:, mask].mean(axis=1)
+            sorted_c   = np.sort(seg_chroma)[::-1]
+            margin = (sorted_c[0] / (sorted_c[0] + sorted_c[1])
+                      if sorted_c[0] + sorted_c[1] > 1e-6 else 0.0)
+            if margin < margin_threshold:
+                new_segments.append(seg)
+                continue
+
+            bass_pc = int(np.argmax(seg_chroma))
+            chord_label = seg["chord"]
+            if ":" not in chord_label:
+                new_segments.append(seg)
+                continue
+            root_str, quality = chord_label.split(":", 1)
+            chord_root_pc = _ROOT_TO_SEMITONE.get(root_str)
+            if chord_root_pc is None or chord_root_pc == bass_pc:
+                new_segments.append(seg)
+                continue
+
+            new_root = _SEMITONE_TO_ROOT_FLAT[bass_pc]
+            new_segments.append({**seg, "chord": f"{new_root}:{quality}"})
+            changed_bars.add(bar["bar"])
+
+        bar["segments"] = new_segments
+
+    print(f"  [bass-anchor] {len(changed_bars)} bar(s) had their root re-anchored to the bass stem")
+    return bar_chords, sorted(changed_bars)
+
+
+# ---------------------------------------------------------------------------
+# Section-aware chord consistency
+# ---------------------------------------------------------------------------
+#
+# allin1 gives us Intro / Verse / Chorus / Bridge / Outro boundaries.  In most
+# pop / rock songs the same section name has the same chord progression every
+# time.  When crema disagrees with itself between Verse 1 and Verse 2 the user
+# spots it instantly on the chart, even if either pass alone looks fine.
+#
+# Algorithm: group bars by section label.  For each label with ≥ 2 instances
+# of identical length, walk position-by-position and pick the chord set from
+# the instance with the highest mean confidence at that position; copy its
+# chord labels to all other instances (timing and segment structure preserved
+# from each target bar).
+#
+# Skips a label when instances have varying bar counts — re-aligning a 6-bar
+# chorus with an 8-bar chorus is too risky to do silently.
+
+def _apply_section_consistency(
+    bar_chords: list[dict],
+    sections: list[dict],
+) -> tuple[list[dict], list[int]]:
+    """
+    Force same-named sections to share their chord progressions, picking the
+    highest-confidence bar at each position as the winner.
+
+    No-op when:
+      - sections is empty
+      - a label appears only once
+      - instances of a label have different bar counts (logged then skipped)
+      - segment structures differ between winner and loser (avoid alignment
+        across mid-bar-split mismatches)
+
+    Returns (bar_chords, list_of_changed_bars).
+    """
+    if not bar_chords or not sections:
+        return bar_chords, []
+
+    by_label: dict[str, list[dict]] = {}
+    for sec in sections:
+        by_label.setdefault(sec["label"], []).append(sec)
+
+    bar_by_num = {b["bar"]: b for b in bar_chords}
+    changed_bars: set[int] = set()
+
+    for label, instances in by_label.items():
+        if len(instances) < 2:
+            continue
+        lengths = [sec["end_bar"] - sec["start_bar"] + 1 for sec in instances]
+        if len(set(lengths)) > 1:
+            print(f"  [section-consistency] '{label}' instances have varying lengths "
+                  f"{lengths} — skipping")
+            continue
+        length = lengths[0]
+
+        for offset in range(length):
+            bars_at_position: list[tuple[dict, float]] = []
+            for sec in instances:
+                bar_num = sec["start_bar"] + offset
+                if bar_num not in bar_by_num:
+                    continue
+                bar = bar_by_num[bar_num]
+                if not bar["segments"]:
+                    continue
+                mean_conf = sum(s["confidence"] for s in bar["segments"]) / len(bar["segments"])
+                bars_at_position.append((bar, mean_conf))
+
+            if len(bars_at_position) < 2:
+                continue
+
+            winner_bar, _winner_conf = max(bars_at_position, key=lambda c: c[1])
+            winner_segments = winner_bar["segments"]
+            winner_chords   = [s["chord"] for s in winner_segments]
+
+            for bar, _ in bars_at_position:
+                if bar is winner_bar:
+                    continue
+                # Skip if segment structure differs — aligning a 1-segment bar to a
+                # 2-segment (mid-bar-split) winner would distort timing.
+                if len(bar["segments"]) != len(winner_segments):
+                    continue
+                cur_chords = [s["chord"] for s in bar["segments"]]
+                if cur_chords == winner_chords:
+                    continue
+                bar["segments"] = [
+                    {**orig, "chord": win["chord"]}
+                    for orig, win in zip(bar["segments"], winner_segments)
+                ]
+                changed_bars.add(bar["bar"])
+
+    if changed_bars:
+        print(f"  [section-consistency] {len(changed_bars)} bar(s) updated to match "
+              "best-confidence instance within their section")
+    else:
+        print("  [section-consistency] no changes (sections already consistent or "
+              "labels appear only once)")
+    return bar_chords, sorted(changed_bars)
 
 
 # ---------------------------------------------------------------------------
@@ -1360,6 +1584,19 @@ def main() -> None:
         )
         print(f"  → {len(key_snapped)} bar(s) snapped to diatonic chord")
 
+    # ── Bass-anchored root correction ──
+    # Runs after madmom-fallback and key-snap (so quality fixes land first) but
+    # BEFORE section consistency (so consistency sees the corrected roots).
+    bass_anchored: list[int] = []
+    if args.bass_anchor:
+        if not args.bass_wav:
+            print("  [bass-anchor] enabled but --bass-wav not provided — skipping")
+        else:
+            bar_chords, bass_anchored = _apply_bass_anchor(
+                bar_chords, args.bass_wav, args.sample_rate,
+                margin_threshold=args.bass_anchor_margin,
+            )
+
     all_segs = [seg for bar in bar_chords for seg in bar["segments"]]
     low_conf = sum(1 for s in all_segs if s["confidence"] < args.threshold)
     low_pct  = 100 * low_conf / max(len(all_segs), 1)
@@ -1391,15 +1628,35 @@ def main() -> None:
         else:
             print("  → no sections detected (continuing without rehearsal marks)")
 
-    madmom_bar_set  = set(madmom_substituted)
-    key_snap_bar_set = set(key_snapped)
+    # ── Section-aware chord consistency ──
+    # Run AFTER sections are loaded; needs both bar_chords and sections.
+    # Idempotent and bounded — never invents data, only copies winning chords
+    # across same-named instances.  Recompute low_pct since chords may change.
+    section_consistent: list[int] = []
+    if args.section_consistency:
+        if not sections:
+            print("  [section-consistency] enabled but no sections detected — skipping")
+        else:
+            bar_chords, section_consistent = _apply_section_consistency(bar_chords, sections)
+            if section_consistent:
+                # Recount low-confidence segments — winning chord may have higher conf
+                all_segs = [seg for bar in bar_chords for seg in bar["segments"]]
+                low_conf = sum(1 for s in all_segs if s["confidence"] < args.threshold)
+                low_pct  = 100 * low_conf / max(len(all_segs), 1)
+
+    madmom_bar_set     = set(madmom_substituted)
+    key_snap_bar_set   = set(key_snapped)
+    bass_anchor_set    = set(bass_anchored)
+    section_consist_set = set(section_consistent)
     print("\n  Chord summary (changes only):")
     prev = None
     for bar in bar_chords:
         beat_pos = 1
         tags = []
-        if bar["bar"] in madmom_bar_set:   tags.append("madmom")
-        if bar["bar"] in key_snap_bar_set: tags.append("key snap")
+        if bar["bar"] in madmom_bar_set:      tags.append("madmom")
+        if bar["bar"] in key_snap_bar_set:    tags.append("key snap")
+        if bar["bar"] in bass_anchor_set:     tags.append("bass-anchor")
+        if bar["bar"] in section_consist_set: tags.append("section-consistency")
         tag = f"  [{', '.join(tags)}]" if tags else ""
         for seg in bar["segments"]:
             if seg["chord"] != prev:

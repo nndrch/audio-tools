@@ -164,6 +164,14 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
   // HPSS preprocessing (default in pipeline.py is "hpss"; only push when different)
   if (s.hpssMode && s.hpssMode !== "hpss") args.push("--hpss-mode", s.hpssMode);
   if (s.hpssMargin !== undefined && s.hpssMargin !== 3.0) args.push("--hpss-margin", String(s.hpssMargin));
+  // Bass-anchored root correction (requires stems — server enforces, UI guards).
+  // The bass-anchor-margin flag is currently exposed only for tuning; we forward it
+  // when non-default so testers can iterate without touching CLI.
+  if (s.bassAnchor) args.push("--bass-anchor");
+  if (s.bassAnchorMargin !== undefined && s.bassAnchorMargin !== 0.55)
+    args.push("--bass-anchor-margin", String(s.bassAnchorMargin));
+  // Section-aware chord consistency (post-processing; needs section detection).
+  if (s.sectionConsistency) args.push("--section-consistency");
 
   // ── Stem-splitting library knobs ──
   if (s.demucsShifts !== undefined && s.demucsShifts !== 1) args.push("--demucs-shifts", String(s.demucsShifts));
