@@ -429,6 +429,78 @@ def _bpm_from_times(beat_times: np.ndarray) -> float:
 # Tempo-change detection (arrangement-level, not jitter)
 # ---------------------------------------------------------------------------
 
+def normalize_beat_octaves(
+    beat_times: np.ndarray,
+    fold_tol: float = 0.18,
+    ema_alpha: float = 0.3,
+) -> tuple[np.ndarray, dict]:
+    """
+    Collapse mid-song beat-tracker octave flips into a single quarter-note grid.
+
+    Beat trackers commonly relock between quarter-note and eighth-note
+    spacing within a single song (especially around section boundaries with
+    different rhythmic density).  Once the lock flips, the downstream warper
+    stretches the doubled-density section to 2× its original duration —
+    correct for what the tracker LABELLED but musically catastrophic.
+
+    Algorithm: walk the beat list while maintaining a running estimate `T` of
+    the true quarter-note interval (initialised from the first 4 intervals).
+    For each next beat:
+      - gap ≈ T / 2  → 8th-note lock; drop the beat (don't add to output).
+      - gap ≈ 2 T    → half-note lock; insert one midpoint, add the beat.
+      - gap ≈ T      → normal; add the beat and EMA-update T.
+      - anything else → add the beat without touching T (avoids letting noise
+                        drift the estimate).
+
+    Returns (normalised_beat_times, info_dict) where info_dict reports the
+    number of skip / insert events and the final T estimate so the caller
+    can log a structured summary.
+    """
+    info = {"dropped": 0, "inserted": 0, "final_T": 0.0}
+    if len(beat_times) < 6:
+        info["final_T"] = float(np.median(np.diff(beat_times))) if len(beat_times) >= 2 else 0.0
+        return beat_times, info
+
+    intervals = np.diff(beat_times)
+    T = float(np.median(intervals[:min(4, len(intervals))]))
+    if T <= 0:
+        info["final_T"] = T
+        return beat_times, info
+
+    result: list[float] = [float(beat_times[0])]
+    i = 1
+    while i < len(beat_times):
+        gap = float(beat_times[i]) - result[-1]
+        ratio = gap / T
+
+        if abs(ratio - 0.5) < 0.5 * fold_tol:
+            # 8th-note lock — skip the doubled beat
+            info["dropped"] += 1
+            i += 1
+        elif abs(ratio - 2.0) < 2.0 * fold_tol:
+            # Half-note lock — insert one midpoint to restore quarter-note grid
+            mid = result[-1] + T
+            result.append(mid)
+            result.append(float(beat_times[i]))
+            info["inserted"] += 1
+            # Update T from the inserted half (mid → beat[i]) so we adapt to
+            # any subtle drift inside the half-locked region
+            T = (1 - ema_alpha) * T + ema_alpha * (float(beat_times[i]) - mid)
+            i += 1
+        elif abs(ratio - 1.0) < fold_tol:
+            # Normal beat — keep and EMA-update T
+            result.append(float(beat_times[i]))
+            T = (1 - ema_alpha) * T + ema_alpha * gap
+            i += 1
+        else:
+            # Ambiguous (rubato, dropped/added beat, etc.) — keep, don't update T
+            result.append(float(beat_times[i]))
+            i += 1
+
+    info["final_T"] = T
+    return np.array(result, dtype=float), info
+
+
 def _octave_fold_bpm(bpm: float, reference: float, fold_tol: float = 0.15) -> float:
     """Fold `bpm` by ×2 or ×0.5 when doing so brings it close to `reference`.
 
@@ -696,6 +768,15 @@ Examples:
                     help="Percentage tempo step that counts as a change (default: 0.06 = 6%%)")
     tc.add_argument("--tempo-change-threshold-floor", type=float, default=6.0, dest="tempo_change_threshold_floor",
                     help="Minimum absolute BPM step that counts as a change (default: 6)")
+    # Beat-octave normalisation (runs after detection, before warping).
+    p.add_argument("--no-beat-octave-normalize", action="store_false",
+                   dest="beat_octave_normalize",
+                   help="Disable mid-song beat-tracker octave-flip correction. "
+                        "By default we thin doubled beats and insert midpoints for "
+                        "halved beats so the warper sees a single quarter-note grid. "
+                        "Pass this if you suspect normalization is misfiring on a "
+                        "genuinely variable-tempo song.")
+    p.set_defaults(beat_octave_normalize=True)
     # Warp engine knobs.
     p.add_argument("--pyrb-crispness", type=int, default=None, dest="pyrb_crispness",
                    help="rubberband --crispness (0=smoothest, 6=sharpest transients). "
@@ -747,6 +828,23 @@ def main() -> None:
         librosa_hop_length=args.librosa_hop_length,
     )
     _emit("detect_beats", 0.55, f"{len(beat_times)} beats")
+
+    # Beat-octave normalisation — collapses mid-song quarter↔eighth-note
+    # tracker flips into a single grid so (a) the tempo-change guard sees a
+    # stable BPM and (b) the warper doesn't stretch the doubled-density
+    # section to 2× its true length.  Disable with --no-beat-octave-normalize.
+    if args.beat_octave_normalize and len(beat_times) >= 6:
+        beat_times_before = beat_times
+        beat_times, norm_info = normalize_beat_octaves(beat_times)
+        if norm_info["dropped"] or norm_info["inserted"]:
+            print(f"  [octave-normalize] dropped {norm_info['dropped']} 8th-note beats, "
+                  f"inserted {norm_info['inserted']} half-note midpoints "
+                  f"({len(beat_times_before)} → {len(beat_times)} beats)")
+            # If we modified the sequence, downbeat indices from the detector
+            # no longer match — drop them so detect_tempo_change falls back to
+            # the 4-beat-bar assumption rather than dereferencing stale indices.
+            if downbeat_indices is not None:
+                downbeat_indices = None
 
     if args.detect_only:
         print(f"\nDetected BPM   : {detected_bpm:.3f}")
