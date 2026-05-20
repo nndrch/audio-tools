@@ -155,6 +155,13 @@ Examples:
     p.set_defaults(bar_phase=True)
     cd.add_argument("--confidence-warn",     type=float, default=0.45, dest="confidence_warn",
                     help="Confidence below which a chord is flagged '?' (default: 0.45)")
+    cd.add_argument("--hpss-mode",           default="hpss",
+                    choices=("off", "hpss", "hpss-no-drums"), dest="hpss_mode",
+                    help="HPSS preprocessing of the time-aligned audio before crema. "
+                         "'off' = full mix; 'hpss' = strip drum transients (default); "
+                         "'hpss-no-drums' = also subtract the drums stem (requires stems).")
+    cd.add_argument("--hpss-margin",         type=float, default=3.0, dest="hpss_margin",
+                    help="HPSS margin (higher = more aggressive separation; default: 3.0)")
 
     # ── Stem splitter ────────────────────────────────────────
     stems = p.add_argument_group("Stem splitter")
@@ -303,10 +310,20 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     title = args.title or input_base
 
+    # ── HPSS-no-drums validation ───────────────────────────
+    # Mode 3 needs the drums stem before chord detection runs.  If the user
+    # disabled stems we surface a clear error instead of silently degrading.
+    if args.hpss_mode == "hpss-no-drums" and args.skip_stems:
+        sys.exit(
+            "✗  --hpss-mode=hpss-no-drums requires stem splitting to be enabled "
+            "(it needs drums.wav before chord detection)."
+        )
+
     # ── Global progress allocation ─────────────────────────
     # Default ranges: stabilize 0–10, chord 10–40, stems 40–100.
-    # When a stage is skipped, its share is redistributed proportionally
-    # across the remaining stages.
+    # When stems run BEFORE chord (hpss-no-drums), swap their windows so the
+    # global bar stays monotonic: stabilize 0–10, stems 10–70, chord 70–100.
+    stems_first = (args.hpss_mode == "hpss-no-drums") and not args.skip_stems
     weights = {
         "stabilize": 0.0 if args.skip_stabilize else 10.0,
         "chord":     30.0,
@@ -316,7 +333,11 @@ def main() -> None:
     scale   = 100.0 / total_w
     cursor  = 0.0
     ranges: dict[str, tuple[float, float]] = {}
-    for stage in ("stabilize", "chord", "stems"):
+    stage_order = (
+        ("stabilize", "stems", "chord") if stems_first
+        else ("stabilize", "chord", "stems")
+    )
+    for stage in stage_order:
         w = weights[stage] * scale
         ranges[stage] = (cursor, cursor + w)
         cursor += w
@@ -361,6 +382,61 @@ def main() -> None:
                 f"   {stabilised}\n"
                 f"   This is unexpected. Please try again."
             )
+
+    # Paths we may need before stems actually run (when stems_first, the chord
+    # step needs --drums-wav pointed at the as-yet-unproduced file).
+    stems_out          = os.path.join(out_dir, input_base + "_stems")
+    backing_track_path = os.path.join(out_dir, input_base + "_backing_track.wav")
+    drums_wav_path     = os.path.join(stems_out, "drums.wav")
+    stems_done = False
+
+    def _build_stems_cmd(stems_filter: str | None) -> list[str]:
+        cmd = [
+            demucs_python, stem_splitter,
+            "-i", stabilised,
+            "-o", stems_out,
+            "--model", args.stem_model,
+        ]
+        if stems_filter: cmd += ["--stems", stems_filter]
+        if args.session_type:
+            cmd += ["--session-type", args.session_type,
+                    "--backing-track-out", backing_track_path]
+        # Demucs library knobs
+        if args.demucs_shifts != 1:     cmd += ["--demucs-shifts",  str(args.demucs_shifts)]
+        if args.demucs_overlap != 0.25: cmd += ["--demucs-overlap", str(args.demucs_overlap)]
+        if args.demucs_jobs > 0:        cmd += ["--demucs-jobs",    str(args.demucs_jobs)]
+        if args.demucs_segment > 0:     cmd += ["--demucs-segment", str(args.demucs_segment)]
+        if args.demucs_device != "auto": cmd += ["--demucs-device", args.demucs_device]
+        if args.demucs_int24:           cmd += ["--demucs-int24"]
+        if args.demucs_mp3:             cmd += ["--demucs-mp3"]
+        # Presence detector
+        if args.presence_db != -30.0:        cmd += ["--presence-db",        str(args.presence_db)]
+        if args.presence_window_s != 1.0:    cmd += ["--presence-window-s",  str(args.presence_window_s)]
+        if args.presence_run_s != 2.0:       cmd += ["--presence-run-s",     str(args.presence_run_s)]
+        # Backing track
+        if args.backing_peak_dbfs != -1.0:   cmd += ["--backing-peak-dbfs",  str(args.backing_peak_dbfs)]
+        if args.backing_bit_depth != 24:     cmd += ["--backing-bit-depth",  str(args.backing_bit_depth)]
+        if _PROGRESS_JSON: cmd += ["--progress-json"]
+        return cmd
+
+    # ── Step 2 / 3 (or 3 / 3) — early stems pass for hpss-no-drums ─────────
+    # When chord detection needs drums removed, Demucs has to run first.  We
+    # also silently add 'drums' to the user's stem filter if absent, so
+    # drums.wav is actually written.
+    if stems_first:
+        stems_filter = args.stems
+        if stems_filter is not None and "drums" not in stems_filter.split(","):
+            stems_filter = stems_filter + ",drums"
+            print(f"[pipeline] hpss-no-drums: adding 'drums' to stem filter → {stems_filter}")
+        run_with_progress(
+            _build_stems_cmd(stems_filter),
+            "STEP 2 / 3  —  Stem Splitting (early, for HPSS drum removal)",
+            "stems", *ranges["stems"],
+        )
+        stems_done = True
+        if not os.path.isfile(drums_wav_path):
+            print(f"[pipeline] WARNING: expected drums stem not produced at {drums_wav_path} — "
+                  "chord step will fall back to plain HPSS.")
 
     # ── allin1 section detection — runs in parallel with chord chart ────────
     # allin1 internally runs Demucs, which takes ~3-5 min on CPU.  Starting it
@@ -413,6 +489,10 @@ def main() -> None:
     # Chord-detection library knobs
     if not args.bar_phase:                    cmd += ["--no-bar-phase"]
     if args.confidence_warn != 0.45:          cmd += ["--threshold", str(args.confidence_warn)]
+    # HPSS preprocessing
+    if args.hpss_mode != "hpss":              cmd += ["--hpss-mode", args.hpss_mode]
+    if args.hpss_margin != 3.0:               cmd += ["--hpss-margin", str(args.hpss_margin)]
+    if args.hpss_mode == "hpss-no-drums":     cmd += ["--drums-wav", drums_wav_path]
     # Beat-detector knobs (also used by chord_chart_render's own beat detection)
     if args.ts_window_factor != 0.15:         cmd += ["--ts-window-factor", str(args.ts_window_factor)]
     if args.librosa_start_bpm != 120.0:       cmd += ["--librosa-start-bpm", str(args.librosa_start_bpm)]
@@ -433,40 +513,15 @@ def main() -> None:
     if allin1_proc is not None:
         _emit_global("sections", ranges["chord"][1], "section detection complete")
 
-    # ── Step 3 / 3  —  Stem splitting ───────────────────────
+    # ── Step 3 / 3  —  Stem splitting (skipped if already ran early) ───────
     if args.skip_stems:
         print("\n[pipeline] Skipping stem splitting.")
+    elif stems_done:
+        print("\n[pipeline] Stem splitting already completed in early pass.")
     else:
-        stems_out = os.path.join(out_dir, input_base + "_stems")
-        backing_track_path = os.path.join(out_dir, input_base + "_backing_track.wav")
-        cmd = [
-            demucs_python, stem_splitter,
-            "-i", stabilised,
-            "-o", stems_out,
-            "--model", args.stem_model,
-        ]
-        if args.stems: cmd += ["--stems", args.stems]
-        if args.session_type:
-            cmd += ["--session-type", args.session_type,
-                    "--backing-track-out", backing_track_path]
-        # Demucs library knobs
-        if args.demucs_shifts != 1:     cmd += ["--demucs-shifts",  str(args.demucs_shifts)]
-        if args.demucs_overlap != 0.25: cmd += ["--demucs-overlap", str(args.demucs_overlap)]
-        if args.demucs_jobs > 0:        cmd += ["--demucs-jobs",    str(args.demucs_jobs)]
-        if args.demucs_segment > 0:     cmd += ["--demucs-segment", str(args.demucs_segment)]
-        if args.demucs_device != "auto": cmd += ["--demucs-device", args.demucs_device]
-        if args.demucs_int24:           cmd += ["--demucs-int24"]
-        if args.demucs_mp3:             cmd += ["--demucs-mp3"]
-        # Presence detector
-        if args.presence_db != -30.0:        cmd += ["--presence-db",        str(args.presence_db)]
-        if args.presence_window_s != 1.0:    cmd += ["--presence-window-s",  str(args.presence_window_s)]
-        if args.presence_run_s != 2.0:       cmd += ["--presence-run-s",     str(args.presence_run_s)]
-        # Backing track
-        if args.backing_peak_dbfs != -1.0:   cmd += ["--backing-peak-dbfs",  str(args.backing_peak_dbfs)]
-        if args.backing_bit_depth != 24:     cmd += ["--backing-bit-depth",  str(args.backing_bit_depth)]
-        if _PROGRESS_JSON: cmd += ["--progress-json"]
         run_with_progress(
-            cmd, "STEP 3 / 3  —  Stem Splitting",
+            _build_stems_cmd(args.stems),
+            "STEP 3 / 3  —  Stem Splitting",
             "stems", *ranges["stems"],
         )
 

@@ -161,6 +161,9 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
   // ── Chord-detection library knobs ──
   if (s.barPhase === false) args.push("--no-bar-phase");
   if (s.confidenceWarn !== undefined && s.confidenceWarn !== 0.45) args.push("--confidence-warn", String(s.confidenceWarn));
+  // HPSS preprocessing (default in pipeline.py is "hpss"; only push when different)
+  if (s.hpssMode && s.hpssMode !== "hpss") args.push("--hpss-mode", s.hpssMode);
+  if (s.hpssMargin !== undefined && s.hpssMargin !== 3.0) args.push("--hpss-margin", String(s.hpssMargin));
 
   // ── Stem-splitting library knobs ──
   if (s.demucsShifts !== undefined && s.demucsShifts !== 1) args.push("--demucs-shifts", String(s.demucsShifts));

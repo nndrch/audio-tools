@@ -58,7 +58,15 @@ def load_audio_mono(path: str, sr: int = 44100) -> tuple[np.ndarray, int]:
         y = y.mean(axis=1)
 
     if sr_orig != sr:
-        y = librosa.resample(y, orig_sr=sr_orig, target_sr=sr)
+        # Use numpy linear interpolation to avoid scipy.fft / resampy deadlocks
+        # on macOS (scipy 1.15+ hangs on import of scipy.fft in subprocesses).
+        # Linear interpolation is sufficient for beat/key/timesig detection.
+        n_out = int(round(len(y) * sr / sr_orig))
+        y = np.interp(
+            np.linspace(0, len(y) - 1, n_out),
+            np.arange(len(y)),
+            y,
+        ).astype(np.float32)
 
     return y.astype(np.float32), sr
 

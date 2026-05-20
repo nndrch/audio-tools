@@ -71,6 +71,11 @@ export type AdvancedState = {
   sectionThreshold: string;
   confidenceWarn: string;
   barPhase: boolean;
+  // HPSS preprocessing for chord detection. "off" | "hpss" | "hpss-no-drums".
+  // Mode 3 is only valid when stems are enabled — UI disables it otherwise and
+  // skipStems-onChange auto-downgrades to "hpss".
+  hpssMode: string;
+  hpssMargin: string;
   deleteOnDownload: boolean;
 
   // Stem Splitting
@@ -150,6 +155,8 @@ export const DEFAULT_ADVANCED: AdvancedState = {
   sectionThreshold: "",
   confidenceWarn: "0.45",
   barPhase: true,
+  hpssMode: "hpss",
+  hpssMargin: "3.0",
   deleteOnDownload: false,
 
   // Stem Splitting
@@ -361,6 +368,26 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
             intro="Detects chords on the beat grid and renders a PDF + MusicXML lead sheet."
           >
             <Row>
+              <SelectField
+                label="Chord input cleaning (HPSS)"
+                value={value.hpssMode}
+                onChange={(v) => patch("hpssMode", v)}
+                options={[
+                  ["off",  "Off — full mix"],
+                  ["hpss", "HPSS — strip drum transients (default)"],
+                  ["hpss-no-drums",
+                    value.skipStems
+                      ? "HPSS + drum removal — enable Stem Splitting first"
+                      : "HPSS + drum removal (best quality, adds Demucs time)",
+                    value.skipStems],
+                ]}
+              />
+            </Row>
+            <Hint>
+              HPSS = Harmonic-Percussive Source Separation. Operates on the time-aligned audio
+              before crema sees it. Key and beat detection still use the raw signal.
+            </Hint>
+            <Row>
               <Check label="Keep 7th qualities (maj7, m7, dom7)"     checked={value.add7th}          onChange={(v) => patch("add7th", v)} />
               <Check label="Secondary model for low-confidence bars (slower)" checked={value.madmomFallback}  onChange={(v) => patch("madmomFallback", v)} />
             </Row>
@@ -418,6 +445,16 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
                 <NumberField label="Secondary-model threshold (0–1)"   value={value.madmomThreshold}   onChange={(v) => patch("madmomThreshold", v)} />
                 <NumberField label="Key-snap threshold (0–1)"          value={value.keySnapThreshold}  onChange={(v) => patch("keySnapThreshold", v)} />
               </Row>
+              {value.hpssMode !== "off" && (
+                <Row>
+                  <NumberField
+                    label="HPSS margin (≥1, higher = stronger harmonic/percussive split)"
+                    value={value.hpssMargin}
+                    onChange={(v) => patch("hpssMargin", v)}
+                    step="0.5"
+                  />
+                </Row>
+              )}
               <Hint>
                 Confidence thresholds. Only adjust if the chart consistently misfires on your music.
               </Hint>
@@ -445,7 +482,19 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
               />
             </Row>
             <Row>
-              <Check label="Skip stems entirely (much faster)" checked={value.skipStems} onChange={(v) => patch("skipStems", v)} />
+              <Check
+                label="Skip stems entirely (much faster)"
+                checked={value.skipStems}
+                onChange={(v) => {
+                  // hpss-no-drums depends on stems; downgrade to plain HPSS
+                  // when the user takes stems away so the run won't error out.
+                  if (v && value.hpssMode === "hpss-no-drums") {
+                    onChange({ ...value, skipStems: true, hpssMode: "hpss" });
+                  } else {
+                    patch("skipStems", v);
+                  }
+                }}
+              />
             </Row>
 
             <SubLabel>Stems to include in ZIP</SubLabel>
@@ -627,7 +676,12 @@ function Check({ label, checked, onChange }: { label: string; checked: boolean; 
   );
 }
 
-function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: Array<[string, string]> }) {
+// Each option is [value, label] or [value, label, disabled]. The third element
+// (when true) renders the <option disabled> so the dropdown shows it greyed
+// out — used by the HPSS dropdown to communicate "enable Stem Splitting first".
+type SelectOption = [string, string] | [string, string, boolean];
+
+function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: Array<SelectOption> }) {
   return (
     <label className="flex flex-col gap-1 min-w-[200px] flex-1">
       <span className="font-inter text-[10px] font-medium uppercase tracking-[0.12em] text-[#888888]">{label}</span>
@@ -636,8 +690,8 @@ function SelectField({ label, value, onChange, options }: { label: string; value
         onChange={(e) => onChange(e.target.value)}
         className="font-season text-sm text-ebony bg-white border border-warm-200 px-2.5 py-2 outline-none focus:border-ebony transition-colors appearance-none"
       >
-        {options.map(([v, l]) => (
-          <option key={v} value={v}>{l}</option>
+        {options.map(([v, l, disabled]) => (
+          <option key={v} value={v} disabled={disabled === true}>{l}</option>
         ))}
       </select>
     </label>
@@ -724,6 +778,15 @@ export function toSettingsPayload(a: AdvancedState) {
     // ── Chord-detection library knobs ──
     barPhase:           a.barPhase ? undefined : false,
     confidenceWarn:     num(a.confidenceWarn),
+    // Default in pipeline.py is "hpss"; only forward when the user picked
+    // something else.  Mode 3 is filtered out here when stems are disabled —
+    // the UI prevents the selection, but be defensive against stale state.
+    hpssMode:           (a.hpssMode === "hpss" || !a.hpssMode)
+                          ? undefined
+                          : (a.hpssMode === "hpss-no-drums" && a.skipStems
+                              ? undefined
+                              : (a.hpssMode as "off" | "hpss-no-drums")),
+    hpssMargin:         num(a.hpssMargin),
 
     // ── Stem-splitting library knobs ──
     demucsShifts:      int(a.demucsShifts),

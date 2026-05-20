@@ -1118,10 +1118,67 @@ Examples:
                      help="librosa beat-tracker onset-strength weighting (default: 100)")
     lib.add_argument("--librosa-hop-length", type=int,   default=512,   dest="librosa_hop_length",
                      help="librosa STFT hop length in samples (default: 512)")
+    # ── HPSS preprocessing for crema input ──
+    # Operates on the (time-aligned) audio already loaded for chord detection.
+    # Key detection and beat detection always use the raw `y`; only crema sees
+    # the cleaned signal so the harmonic-percussive split can't bias the
+    # chromagram-based key or the onset-strength-based beat tracker.
+    lib.add_argument("--hpss-mode",        default="hpss",
+                     choices=("off", "hpss", "hpss-no-drums"), dest="hpss_mode",
+                     help="HPSS preprocessing before crema chord detection "
+                          "(off | hpss = harmonic-only | hpss-no-drums = subtract drums stem "
+                          "then HPSS, requires --drums-wav). Default: hpss")
+    lib.add_argument("--drums-wav",        default=None, dest="drums_wav",
+                     help="Path to drums stem WAV (required when --hpss-mode=hpss-no-drums).")
+    lib.add_argument("--hpss-margin",      type=float, default=3.0, dest="hpss_margin",
+                     help="librosa.effects.hpss margin (higher = more aggressive harmonic/"
+                          "percussive separation; default: 3.0)")
 
     p.add_argument("--progress-json",     action="store_true", dest="progress_json",
                    help="Emit machine-readable PROGRESS JSON lines on stdout")
     return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# HPSS preprocessing for chord detection
+# ---------------------------------------------------------------------------
+
+def _apply_hpss_preprocessing(
+    y: np.ndarray,
+    sr: int,
+    mode: str,
+    drums_wav: str | None,
+    margin: float,
+    sample_rate: int,
+) -> np.ndarray:
+    """Return the audio array to feed into crema, based on hpss_mode.
+
+    Operates on the *already loaded* time-aligned signal `y` — the caller is
+    expected to have run load_audio_mono on the stabilised WAV.  Key detection
+    and beat tracking continue to use the raw `y`; only crema sees the result.
+
+    mode='off'           → return y unchanged.
+    mode='hpss'          → librosa.effects.hpss(y, margin=margin); return harmonic.
+    mode='hpss-no-drums' → load drums.wav (also time-aligned), subtract from y
+                           (length-clipped to min), then HPSS the residual.
+                           Falls back to plain 'hpss' if drums_wav is missing.
+    """
+    if mode == "off":
+        return y
+    import librosa
+    y_input = y
+    if mode == "hpss-no-drums":
+        if drums_wav and os.path.isfile(drums_wav):
+            print(f"  [HPSS] Subtracting drums stem: {os.path.basename(drums_wav)}")
+            drums_y, _ = load_audio_mono(drums_wav, sample_rate)
+            n = min(len(y), len(drums_y))
+            y_input = (y[:n] - drums_y[:n]).astype(np.float32)
+        else:
+            print(f"  [HPSS] drums stem not found at {drums_wav!r} — "
+                  "falling back to plain HPSS")
+    y_harmonic, _ = librosa.effects.hpss(y_input, margin=margin)
+    print(f"  [HPSS] Harmonic separation applied (margin={margin})")
+    return y_harmonic.astype(np.float32)
 
 
 def main() -> None:
@@ -1169,7 +1226,12 @@ def main() -> None:
     # 2. Detect chords
     _emit("crema", 0.10, "crema chord detection")
     print("\n[2/5] Detecting chords (crema) …")
-    times, confidence, labels = detect_chords_crema(y, sr)
+    if args.hpss_mode != "off":
+        print(f"  [HPSS] mode={args.hpss_mode}")
+    y_chords = _apply_hpss_preprocessing(
+        y, sr, args.hpss_mode, args.drums_wav, args.hpss_margin, args.sample_rate,
+    )
+    times, confidence, labels = detect_chords_crema(y_chords, sr)
     _emit("crema", 0.45, f"{len(times)} frames")
     hop = int(round((times[1] - times[0]) * sr)) if len(times) > 1 else 4096
     print(f"  {len(times)} frames  |  mean confidence: {confidence.mean():.1%}")

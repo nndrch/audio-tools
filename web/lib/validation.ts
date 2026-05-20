@@ -86,6 +86,8 @@ export const SettingsSchema = z.object({
   // ── Chord-detection library knobs ──
   barPhase:           z.boolean().optional(),
   confidenceWarn:     z.number().min(0).max(1).optional(),
+  hpssMode:           z.enum(["off", "hpss", "hpss-no-drums"]).optional(),
+  hpssMargin:         z.number().min(0.1).max(20).optional(),
 
   // ── Stem-splitting library knobs ──
   demucsShifts:      z.number().int().min(1).max(10).optional(),
