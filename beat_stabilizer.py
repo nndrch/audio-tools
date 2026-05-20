@@ -429,6 +429,30 @@ def _bpm_from_times(beat_times: np.ndarray) -> float:
 # Tempo-change detection (arrangement-level, not jitter)
 # ---------------------------------------------------------------------------
 
+def _octave_fold_bpm(bpm: float, reference: float, fold_tol: float = 0.15) -> float:
+    """Fold `bpm` by ×2 or ×0.5 when doing so brings it close to `reference`.
+
+    Beat trackers regularly produce octave errors: a 100-BPM song reads as
+    either 100 or 200 depending on whether the tracker locked onto quarter
+    notes or eighth notes.  When the lock flips mid-song we get a "phantom
+    tempo change" that's really just one tempo viewed at two metrical levels.
+
+    Returns the folded value only when it lands within `fold_tol` (relative)
+    of the reference; otherwise returns `bpm` unchanged.  This preserves true
+    1.5× / 1.3× tempo changes (which should still trip the guard) while
+    silently collapsing clean 2.0× / 0.5× octave flips.
+    """
+    if bpm <= 0 or reference <= 0:
+        return bpm
+    candidates = (bpm, bpm * 0.5, bpm * 2.0)
+    best = min(candidates, key=lambda x: abs(x - reference))
+    if best is bpm:
+        return bpm
+    if abs(best - reference) / reference <= fold_tol:
+        return best
+    return bpm
+
+
 def detect_tempo_change(
     beat_times: np.ndarray,
     downbeat_indices: np.ndarray | None,
@@ -436,6 +460,7 @@ def detect_tempo_change(
     persist_bars: int = 4,
     threshold_pct: float = 0.06,
     threshold_floor_bpm: float = 6.0,
+    octave_fold_tol: float = 0.15,
 ) -> dict | None:
     """
     Detect a sustained arrangement-level tempo change.
@@ -516,16 +541,25 @@ def detect_tempo_change(
     # We look for: smoothed[i] differs from smoothed[i-1] by ≥ threshold,
     # AND smoothed[i+1..i+persist_bars] also stays on the new level (within
     # half the threshold of smoothed[i]).
+    #
+    # Before each comparison, octave-fold the candidate BPM against the
+    # reference: a 105 → 207 flip becomes 105 → 103.5 (the second half is
+    # the same tempo, just heard in eighth notes by the tracker).  See
+    # _octave_fold_bpm for the rationale and tolerance.
     for i in range(window_bars, len(smoothed) - persist_bars):
         prev_bpm = float(smoothed[i - 1])
-        curr_bpm = float(smoothed[i])
+        curr_bpm = _octave_fold_bpm(float(smoothed[i]), prev_bpm, octave_fold_tol)
         delta = abs(curr_bpm - prev_bpm)
         threshold = max(threshold_floor_bpm, threshold_pct * prev_bpm)
         if delta < threshold:
             continue
         # Check persistence: every smoothed value in [i, i+persist_bars]
-        # must stay within threshold/2 of curr_bpm.
-        persistence_window = smoothed[i: i + persist_bars + 1]
+        # (also octave-folded against prev_bpm) must stay within threshold/2
+        # of curr_bpm.
+        persistence_window = np.array([
+            _octave_fold_bpm(float(b), prev_bpm, octave_fold_tol)
+            for b in smoothed[i: i + persist_bars + 1]
+        ])
         if np.all(np.abs(persistence_window - curr_bpm) < threshold / 2):
             return {
                 "from_bpm": round(prev_bpm, 2),
