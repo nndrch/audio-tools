@@ -171,6 +171,19 @@ Examples:
                     help="Force same-named sections (Chorus 1, Chorus 2, …) to share their "
                          "chord progression by voting per bar position. Requires section "
                          "detection to be on. Pure post-processing — costs nothing.")
+    cd.add_argument("--slash-chords",        action="store_true", dest="slash_chords",
+                    help="Detect chord inversions like C/E or G/B by reading the bass stem. "
+                         "Requires stems (same constraint as --bass-anchor). Costs almost "
+                         "nothing once stems are available.")
+    cd.add_argument("--viterbi-smoothing",   action="store_true", dest="viterbi_smoothing",
+                    help="Key-conditioned Viterbi smoothing of the chord sequence. Replaces "
+                         "one-off chord misdetections that violate basic music-theory priors "
+                         "(e.g. a stray Bdim between two Cs in C major). Bars with mid-bar "
+                         "splits are left untouched.")
+    cd.add_argument("--viterbi-stay-prob",   type=float, default=0.35, dest="viterbi_stay_prob",
+                    help="Viterbi self-transition prior (default: 0.35; higher = stickier).")
+    cd.add_argument("--viterbi-cadence-boost", type=float, default=4.0, dest="viterbi_cadence_boost",
+                    help="Viterbi cadence-transition multiplier (default: 4.0).")
 
     # ── Stem splitter ────────────────────────────────────────
     stems = p.add_argument_group("Stem splitter")
@@ -320,12 +333,14 @@ def main() -> None:
     title = args.title or input_base
 
     # ── Validation for features that need stems before chord ───────────────
-    # Both `hpss-no-drums` (needs drums.wav) and `bass-anchor` (needs bass.wav)
-    # require stems to be produced before the chord step.  Skip-stems makes
-    # this impossible — surface a clear error instead of silently degrading.
+    # `hpss-no-drums` (needs drums.wav), `bass-anchor` and `slash-chords`
+    # (both need bass.wav) require stems to be produced before the chord
+    # step.  Skip-stems makes this impossible — surface a clear error
+    # instead of silently degrading.
     _stems_dependent = []
     if args.hpss_mode == "hpss-no-drums": _stems_dependent.append("--hpss-mode=hpss-no-drums")
     if args.bass_anchor:                  _stems_dependent.append("--bass-anchor")
+    if args.slash_chords:                 _stems_dependent.append("--slash-chords")
     if _stems_dependent and args.skip_stems:
         sys.exit(
             f"✗  {', '.join(_stems_dependent)} requires stem splitting to be enabled "
@@ -334,11 +349,11 @@ def main() -> None:
 
     # ── Global progress allocation ─────────────────────────
     # Default ranges: stabilize 0–10, chord 10–40, stems 40–100.
-    # When stems run BEFORE chord (hpss-no-drums OR bass-anchor), swap their
-    # windows so the global bar stays monotonic: stabilize 0–10, stems 10–70,
-    # chord 70–100.  Same constraint, same code path.
+    # When stems run BEFORE chord (hpss-no-drums OR bass-anchor OR slash-chords),
+    # swap windows so the global bar stays monotonic: stabilize 0–10,
+    # stems 10–70, chord 70–100.
     stems_first = (
-        (args.hpss_mode == "hpss-no-drums" or args.bass_anchor)
+        (args.hpss_mode == "hpss-no-drums" or args.bass_anchor or args.slash_chords)
         and not args.skip_stems
     )
     weights = {
@@ -444,8 +459,8 @@ def main() -> None:
     if stems_first:
         stems_filter = args.stems
         needed = []
-        if args.hpss_mode == "hpss-no-drums": needed.append("drums")
-        if args.bass_anchor:                  needed.append("bass")
+        if args.hpss_mode == "hpss-no-drums":         needed.append("drums")
+        if args.bass_anchor or args.slash_chords:     needed.append("bass")
         if stems_filter is not None:
             current = stems_filter.split(",")
             added = [s for s in needed if s not in current]
@@ -455,6 +470,7 @@ def main() -> None:
         why = []
         if args.hpss_mode == "hpss-no-drums": why.append("HPSS drum removal")
         if args.bass_anchor:                  why.append("bass-anchor")
+        if args.slash_chords:                 why.append("slash chords")
         run_with_progress(
             _build_stems_cmd(stems_filter),
             f"STEP 2 / 3  —  Stem Splitting (early, for {' + '.join(why)})",
@@ -464,9 +480,9 @@ def main() -> None:
         if args.hpss_mode == "hpss-no-drums" and not os.path.isfile(drums_wav_path):
             print(f"[pipeline] WARNING: expected drums stem not produced at {drums_wav_path} — "
                   "chord step will fall back to plain HPSS.")
-        if args.bass_anchor and not os.path.isfile(bass_wav_path):
+        if (args.bass_anchor or args.slash_chords) and not os.path.isfile(bass_wav_path):
             print(f"[pipeline] WARNING: expected bass stem not produced at {bass_wav_path} — "
-                  "chord step will skip bass-anchor.")
+                  "chord step will skip bass-anchor / slash-chords.")
 
     # ── allin1 section detection — runs in parallel with chord chart ────────
     # allin1 internally runs Demucs, which takes ~3-5 min on CPU.  Starting it
@@ -525,8 +541,17 @@ def main() -> None:
     if args.hpss_mode == "hpss-no-drums":     cmd += ["--drums-wav", drums_wav_path]
     # Bass-anchored root correction (needs bass.wav from the early stems pass)
     if args.bass_anchor:                      cmd += ["--bass-anchor", "--bass-wav", bass_wav_path]
+    # Slash chord (inversion) labelling — same bass.wav dependency.
+    if args.slash_chords:
+        cmd += ["--slash-chords"]
+        if "--bass-wav" not in cmd:           cmd += ["--bass-wav", bass_wav_path]
     # Section-aware chord consistency (post-processing; needs sections-json)
     if args.section_consistency:              cmd += ["--section-consistency"]
+    # Key-conditioned Viterbi smoothing (uses crema posteriors only — no stems).
+    if args.viterbi_smoothing:
+        cmd += ["--viterbi-smoothing"]
+        if args.viterbi_stay_prob != 0.35:    cmd += ["--viterbi-stay-prob", str(args.viterbi_stay_prob)]
+        if args.viterbi_cadence_boost != 4.0: cmd += ["--viterbi-cadence-boost", str(args.viterbi_cadence_boost)]
     # Beat-detector knobs (also used by chord_chart_render's own beat detection)
     if args.ts_window_factor != 0.15:         cmd += ["--ts-window-factor", str(args.ts_window_factor)]
     if args.librosa_start_bpm != 120.0:       cmd += ["--librosa-start-bpm", str(args.librosa_start_bpm)]

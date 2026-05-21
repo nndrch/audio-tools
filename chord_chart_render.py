@@ -155,7 +155,13 @@ def simplify_chord(label: str, add_7th: bool = False) -> str:
     return f"{root}:min" if base == "min" else f"{root}:maj"
 
 
-def crema_to_ly(label: str, use_sharps: bool = False) -> tuple[str, str]:
+def _bass_pc_to_name(bass_pc: int, use_sharps: bool) -> str:
+    """Return the display name for a bass pitch class (slash-chord suffix)."""
+    table = _SEMITONE_TO_ROOT_SHARP if use_sharps else _SEMITONE_TO_ROOT_FLAT
+    return table.get(int(bass_pc) % 12, "")
+
+
+def crema_to_ly(label: str, use_sharps: bool = False, bass_pc: int | None = None) -> tuple[str, str]:
     if label in ("N", "X", ""):
         return ("s", "")
     root, quality = label.split(":", 1) if ":" in label else (label, "maj")
@@ -164,10 +170,19 @@ def crema_to_ly(label: str, use_sharps: bool = False) -> tuple[str, str]:
         root = _FLAT_TO_SHARP_ROOT.get(root, root)
     else:
         root = _SHARP_TO_FLAT_ROOT.get(root, root)
-    return (_ROOT_TO_LY.get(root, root.lower()), _QUALITY_TO_LY.get(quality, f":{quality}"))
+    ly_root = _ROOT_TO_LY.get(root, root.lower())
+    ly_qual = _QUALITY_TO_LY.get(quality, f":{quality}")
+    # Append LilyPond slash-bass syntax when an inversion tag is present.
+    # LilyPond chord syntax: <root><qual>/<bass>  e.g. c:5/e  →  C/E
+    if bass_pc is not None:
+        bass_name = _bass_pc_to_name(bass_pc, use_sharps)
+        if bass_name:
+            bass_ly = _ROOT_TO_LY.get(bass_name, bass_name.lower())
+            ly_qual = f"{ly_qual}/{bass_ly}"
+    return (ly_root, ly_qual)
 
 
-def crema_to_display(label: str, use_sharps: bool = False) -> str:
+def crema_to_display(label: str, use_sharps: bool = False, bass_pc: int | None = None) -> str:
     if label in ("N", "X", ""):
         return ""
     root, quality = label.split(":", 1) if ":" in label else (label, "maj")
@@ -175,7 +190,12 @@ def crema_to_display(label: str, use_sharps: bool = False) -> str:
         display_root = _FLAT_TO_SHARP_ROOT.get(root, root)
     else:
         display_root = _SHARP_TO_FLAT_ROOT.get(root, root)
-    return f"{display_root}{_QUALITY_DISPLAY.get(quality, quality)}"
+    base = f"{display_root}{_QUALITY_DISPLAY.get(quality, quality)}"
+    if bass_pc is not None:
+        bass_name = _bass_pc_to_name(bass_pc, use_sharps)
+        if bass_name:
+            base = f"{base}/{bass_name}"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +229,8 @@ def find_bar_phase(beat_chords: list[dict], beats_per_bar: int) -> int:
 _BEAT_TO_DUR = {1: "4", 2: "2", 3: "2.", 4: "1"}
 
 
-def _ly_chord_token(label: str, beats: int, use_sharps: bool = False) -> str:
-    root, qual = crema_to_ly(label, use_sharps)
+def _ly_chord_token(label: str, beats: int, use_sharps: bool = False, bass_pc: int | None = None) -> str:
+    root, qual = crema_to_ly(label, use_sharps, bass_pc=bass_pc)
     if root == "s":
         return " ".join("s4" for _ in range(beats))
     return f"{root}{_BEAT_TO_DUR.get(beats, '4')}{qual}"
@@ -797,11 +817,15 @@ _QUALITY_TO_M21 = {
 }
 
 
-def _crema_to_m21_figure(label: str, use_sharps: bool = False) -> str | None:
+def _crema_to_m21_figure(label: str, use_sharps: bool = False, bass_pc: int | None = None) -> str | None:
     """
     Convert a crema-style chord label (e.g. 'Bb:min7', 'C#:maj7') into a
     music21 ChordSymbol figure string ('B-m7', 'C#maj7').  Returns None for
     N/X/empty labels which become rests in the score.
+
+    If `bass_pc` is provided and differs from the chord root, append slash
+    notation ("Am/E", "Cmaj7/G").  music21's ChordSymbol parses this directly
+    and exports a proper MusicXML <bass> element.
     """
     if label in ("N", "X", ""):
         return None
@@ -811,7 +835,14 @@ def _crema_to_m21_figure(label: str, use_sharps: bool = False) -> str | None:
     # music21 uses "-" for flat, not "b"
     if root.endswith("b") and len(root) > 1:
         root = root[:-1] + "-"
-    return root + _QUALITY_TO_M21.get(quality, "")
+    figure = root + _QUALITY_TO_M21.get(quality, "")
+    if bass_pc is not None:
+        bass_root = _bass_pc_to_name(bass_pc, use_sharps)
+        if bass_root:
+            if bass_root.endswith("b") and len(bass_root) > 1:
+                bass_root = bass_root[:-1] + "-"
+            figure = f"{figure}/{bass_root}"
+    return figure
 
 
 def bar_chords_to_musicxml(
@@ -877,7 +908,7 @@ def bar_chords_to_musicxml(
         # rhythm-slash notes below.
         offset = 0.0
         for seg in bar["segments"]:
-            figure = _crema_to_m21_figure(seg["chord"], use_sharps)
+            figure = _crema_to_m21_figure(seg["chord"], use_sharps, seg.get("bass_pc"))
             if figure is not None:
                 cs = harmony.ChordSymbol(figure)
                 cs.duration.quarterLength = seg["beats"] * beat_ql
@@ -929,7 +960,8 @@ def generate_lilypond(
 
     chord_lines, slash_lines = [], []
     for i, bar in enumerate(bar_chords):
-        tokens = [_ly_chord_token(seg["chord"], seg["beats"], use_sharps) for seg in bar["segments"]]
+        tokens = [_ly_chord_token(seg["chord"], seg["beats"], use_sharps, seg.get("bass_pc"))
+                  for seg in bar["segments"]]
         chord_lines.append(" ".join(tokens))
         slashes = bar_slashes
         if bar["bar"] in section_marks:
@@ -1154,10 +1186,420 @@ Examples:
                      help="Force same-named sections (e.g. Chorus 1 and Chorus 2) to share "
                           "their chord progression by voting per bar position. Requires "
                           "section detection (--sections-json).")
+    # ── Slash chord labelling (inversions) ──
+    # Reuses the bass stem loaded by bass-anchor.  When bass and chord agree on
+    # root family but the bass note is a chord tone other than the root (3rd
+    # or 5th), tag the segment for "C/E", "G/B", … slash notation.
+    lib.add_argument("--slash-chords", action="store_true", dest="slash_chords",
+                     help="Detect chord inversions (C/E, G/B, Am/C) using the bass stem. "
+                          "Requires --bass-wav. Tags segments with bass_pc; renderers emit "
+                          "slash notation in the PDF / MusicXML / JSON output.")
+    # ── Key-conditioned Viterbi smoothing ──
+    # Replaces the greedy per-bar chord pick with a music-theory-aware sequence
+    # decode.  Bars with explicit mid-bar splits are skipped (they encode
+    # fine-grained detection that Viterbi shouldn't flatten).
+    lib.add_argument("--viterbi-smoothing", action="store_true", dest="viterbi_smoothing",
+                     help="Smooth chord sequence with a key-conditioned Viterbi pass. "
+                          "Catches one-off misdetections (e.g. a stray Bdim between two Cs "
+                          "in C major) that no other guard catches. Works at bar level on "
+                          "single-segment bars; mid-bar splits are left untouched.")
+    lib.add_argument("--viterbi-stay-prob", type=float, default=0.35, dest="viterbi_stay_prob",
+                     help="Viterbi same-chord self-transition prior (default: 0.35). "
+                          "Higher = stickier (more reluctant to switch chords).")
+    lib.add_argument("--viterbi-cadence-boost", type=float, default=4.0, dest="viterbi_cadence_boost",
+                     help="Multiplier on classical cadence transitions (V→I, IV→I, ii→V, "
+                          "v→i, iv→i) in the Viterbi prior (default: 4.0).")
 
     p.add_argument("--progress-json",     action="store_true", dest="progress_json",
                    help="Emit machine-readable PROGRESS JSON lines on stdout")
     return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Slash chord (inversion) labelling
+# ---------------------------------------------------------------------------
+#
+# Chord-detection models output a (root, quality) pair: "C:maj", "A:min7", …
+# They have no notion of inversions — "C with E in the bass" still comes back
+# as "C:maj" because the chord identity is the same.  Musically, though, the
+# inversion matters: descending bass lines like `C – G/B – Am – F` read
+# completely differently from `C – G – Am – F`.
+#
+# This pass runs after bass-anchor has corrected any wrong-root cases.  For
+# every segment where bass and chord *agree on root family but the bass note
+# is a chord tone other than the root* (the 3rd or 5th), we tag the segment
+# with `bass_pc` so the renderers can emit slash notation.  When bass is
+# *not* a chord tone, this is the bass-anchor case and we leave it alone
+# (slash chords don't apply to non-diatonic bass).
+
+# Pitch-class offsets from the root for each crema quality.  Conservative
+# defaults — extended/altered qualities fall back to the major-triad set.
+_CHORD_TONES_BY_QUALITY: dict[str, frozenset[int]] = {
+    "maj":      frozenset({0, 4, 7}),
+    "min":      frozenset({0, 3, 7}),
+    "dim":      frozenset({0, 3, 6}),
+    "aug":      frozenset({0, 4, 8}),
+    "sus2":     frozenset({0, 2, 7}),
+    "sus4":     frozenset({0, 5, 7}),
+    "maj7":     frozenset({0, 4, 7, 11}),
+    "min7":     frozenset({0, 3, 7, 10}),
+    "7":        frozenset({0, 4, 7, 10}),
+    "dim7":     frozenset({0, 3, 6, 9}),
+    "hdim7":    frozenset({0, 3, 6, 10}),  # half-diminished (m7b5)
+    "minmaj7":  frozenset({0, 3, 7, 11}),
+    "maj6":     frozenset({0, 4, 7, 9}),
+    "min6":     frozenset({0, 3, 7, 9}),
+    "9":        frozenset({0, 2, 4, 7, 10}),
+    "maj9":     frozenset({0, 2, 4, 7, 11}),
+    "min9":     frozenset({0, 2, 3, 7, 10}),
+}
+
+def _chord_tones_for_quality(quality: str) -> frozenset[int]:
+    """Return chord-tone pitch-class offsets, falling back to major triad."""
+    return _CHORD_TONES_BY_QUALITY.get(quality, frozenset({0, 4, 7}))
+
+
+def _apply_slash_chords(
+    bar_chords: list[dict],
+    bass_wav: str | None,
+    sample_rate: int,
+    margin_threshold: float = 0.55,
+) -> tuple[list[dict], list[int]]:
+    """
+    Tag segments with `bass_pc` when the bass plays a chord tone other than
+    the root (first or second inversion).  Renderers consult this field to
+    emit slash notation ("C/E", "G/B", "Am/C").
+
+    No-op when bass_wav is missing.  Leaves bass-as-non-chord-tone cases
+    alone (those are bass-anchor's domain).
+    """
+    if not bar_chords or not bass_wav or not os.path.isfile(bass_wav):
+        return bar_chords, []
+
+    import librosa
+    print(f"  [slash-chords] loading {os.path.basename(bass_wav)} …")
+    y_bass, sr_bass = load_audio_mono(bass_wav, sample_rate)
+    chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr_bass)
+    frame_times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sr_bass)
+
+    if len(bar_chords) >= 2:
+        bar_duration = bar_chords[1]["time"] - bar_chords[0]["time"]
+    else:
+        bar_duration = 2.0
+
+    inverted_bars: set[int] = set()
+    for i, bar in enumerate(bar_chords):
+        bar_start = bar["time"]
+        bar_end   = (bar_chords[i + 1]["time"]
+                     if i + 1 < len(bar_chords) else bar_start + bar_duration)
+        total_beats = sum(s["beats"] for s in bar["segments"])
+        if total_beats == 0:
+            continue
+        beat_dur = (bar_end - bar_start) / total_beats
+
+        cur_t = bar_start
+        for seg in bar["segments"]:
+            seg_start = cur_t
+            seg_end   = cur_t + seg["beats"] * beat_dur
+            cur_t     = seg_end
+
+            mask = (frame_times >= seg_start) & (frame_times < seg_end)
+            if not mask.any():
+                continue
+
+            seg_chroma = chroma[:, mask].mean(axis=1)
+            sorted_c   = np.sort(seg_chroma)[::-1]
+            margin = (sorted_c[0] / (sorted_c[0] + sorted_c[1])
+                      if sorted_c[0] + sorted_c[1] > 1e-6 else 0.0)
+            if margin < margin_threshold:
+                continue
+
+            bass_pc = int(np.argmax(seg_chroma))
+            chord_label = seg["chord"]
+            if ":" not in chord_label:
+                continue
+            root_str, quality = chord_label.split(":", 1)
+            chord_root_pc = _ROOT_TO_SEMITONE.get(root_str)
+            if chord_root_pc is None or chord_root_pc == bass_pc:
+                # Bass = root, no inversion
+                continue
+
+            interval = (bass_pc - chord_root_pc) % 12
+            tones = _chord_tones_for_quality(quality)
+            if interval in tones:
+                # Bass is a chord tone other than root → inversion → tag for slash
+                seg["bass_pc"] = bass_pc
+                inverted_bars.add(bar["bar"])
+            # else: bass is NOT a chord tone — that's the bass-anchor case,
+            # which (if enabled) already ran above. We leave it alone here.
+
+    print(f"  [slash-chords] {len(inverted_bars)} bar(s) tagged with an inversion")
+    return bar_chords, sorted(inverted_bars)
+
+
+# ---------------------------------------------------------------------------
+# Key-conditioned Viterbi smoothing
+# ---------------------------------------------------------------------------
+#
+# crema picks the best chord per beat independently.  Result: a single
+# misdetected `Bdim7` between two `C`s in an obviously tonal context.  Music
+# theory says that's almost never a real chord change — V→I and I→IV
+# cadences are common; I→vii° and similar transitions are vanishingly rare.
+#
+# Viterbi decoding finds the chord *sequence* that maximises
+#   sum_i [ log P(crema_obs | chord_i) + log P(chord_i | chord_i-1, key) ]
+# rather than the chord *per beat* that maximises P(chord | crema_obs).  A
+# transition prior conditioned on the detected key replaces independent
+# argmax with a music-theoretically-aware sequence decode.
+#
+# We marginalise crema's 170-dim posterior to 24-dim (12 roots × {major,
+# minor}) so the transition matrix is small enough to hand-author and the
+# music theory stays interpretable.  After Viterbi picks (root, mode) per
+# bar, we recover the chord quality by taking the highest-posterior chord
+# in the original 170 distribution whose root/mode matches Viterbi's pick.
+
+def _marginalize_crema_to_root_mode(probs: np.ndarray, vocab: list[str]) -> np.ndarray:
+    """Collapse (T, 170) crema posteriors to (T, 24): 12 roots × {maj, min}.
+
+    Major qualities (maj, maj7, 7, aug, sus2, sus4, …) sum into the major bin
+    for that root.  Minor qualities (min, min7, dim, dim7, hdim7, minmaj7)
+    sum into the minor bin.  The "N" (no chord) class is dropped.
+    """
+    T = probs.shape[0]
+    out = np.zeros((T, 24), dtype=np.float64)
+    for j, lbl in enumerate(vocab):
+        if ":" not in lbl:
+            continue
+        root_str, quality = lbl.split(":", 1)
+        root = _ROOT_TO_SEMITONE.get(root_str)
+        if root is None:
+            continue
+        # Minor family
+        is_minor = (
+            quality.startswith("min")
+            or quality.startswith("dim")
+            or quality in ("hdim7",)
+        )
+        col = root * 2 + (1 if is_minor else 0)  # 0..23
+        out[:, col] += probs[:, j]
+    # Normalize each row so it's a proper distribution over the 24 classes
+    row_sums = out.sum(axis=1, keepdims=True)
+    row_sums[row_sums < 1e-12] = 1.0
+    return out / row_sums
+
+
+def _build_key_transition_matrix(
+    key_root: int,
+    key_mode: str,
+    stay_prob: float = 0.35,
+    in_key_base: float = 0.06,
+    cadence_boost: float = 4.0,
+    out_of_key_base: float = 0.005,
+) -> np.ndarray:
+    """Build a 24×24 transition matrix log P(chord_t | chord_{t-1}) in key.
+
+    Each row corresponds to a (root, mode) source; each column to a (root,
+    mode) destination.  The matrix is NOT row-normalised — Viterbi only uses
+    relative log-probs, so leaving the absolute scale alone keeps things
+    interpretable.  All numbers tuned by ear, not learned from data.
+    """
+    # Diatonic chord families (scale degree → expected mode):
+    #   major key:  I (M), ii (m), iii (m), IV (M), V (M), vi (m), vii° (m proxy)
+    #   minor key:  i (m), ii° (m), III (M), iv (m), v (m), VI (M), VII (M)
+    if key_mode == "major":
+        diatonic_major = {0, 5, 7}        # I, IV, V
+        diatonic_minor = {2, 4, 9, 11}    # ii, iii, vi, vii° (modelled as m)
+    else:
+        diatonic_major = {3, 8, 10}       # III, VI, VII
+        diatonic_minor = {0, 2, 5, 7}     # i, ii°, iv, v
+
+    M = np.full((24, 24), out_of_key_base, dtype=np.float64)
+    for src in range(24):
+        for dst in range(24):
+            src_root, src_mode = src // 2, "minor" if src % 2 else "major"
+            dst_root, dst_mode = dst // 2, "minor" if dst % 2 else "major"
+            dst_deg = (dst_root - key_root) % 12
+
+            # Diatonic membership
+            if dst_mode == "major" and dst_deg in diatonic_major:
+                M[src, dst] = in_key_base
+            elif dst_mode == "minor" and dst_deg in diatonic_minor:
+                M[src, dst] = in_key_base
+
+            # Cadence boosts (in major-key idiom; minor-key uses i/iv/v versions)
+            src_deg = (src_root - key_root) % 12
+            if key_mode == "major":
+                if src_deg == 7 and dst_deg == 0 and dst_mode == "major":   # V → I
+                    M[src, dst] *= cadence_boost
+                elif src_deg == 5 and dst_deg == 0 and dst_mode == "major": # IV → I
+                    M[src, dst] *= cadence_boost * 0.75
+                elif src_deg == 2 and src_mode == "minor" and dst_deg == 7 and dst_mode == "major":  # ii → V
+                    M[src, dst] *= cadence_boost * 0.75
+                elif src_deg == 9 and src_mode == "minor" and dst_deg == 5 and dst_mode == "major":  # vi → IV
+                    M[src, dst] *= 2.0
+            else:
+                if src_deg == 7 and dst_deg == 0 and dst_mode == "minor":   # v → i
+                    M[src, dst] *= cadence_boost
+                elif src_deg == 5 and src_mode == "minor" and dst_deg == 0 and dst_mode == "minor":  # iv → i
+                    M[src, dst] *= cadence_boost * 0.75
+                elif src_deg == 8 and src_mode == "major" and dst_deg == 3 and dst_mode == "major":  # VI → III
+                    M[src, dst] *= 2.0
+
+            # Self-loop (chord stays the same across bar boundary)
+            if src == dst:
+                M[src, dst] = stay_prob
+
+    return np.log(M + 1e-12)
+
+
+def _viterbi_decode(log_emit: np.ndarray, log_trans: np.ndarray) -> np.ndarray:
+    """Standard Viterbi decode.
+    log_emit : (T, K) log emission probabilities.
+    log_trans: (K, K) log transition probabilities.
+    Returns  : (T,)   sequence of int states.
+    """
+    T, K = log_emit.shape
+    delta  = np.empty((T, K), dtype=np.float64)
+    psi    = np.empty((T, K), dtype=np.int64)
+    delta[0] = log_emit[0]
+    psi[0]   = 0
+    for t in range(1, T):
+        # delta[t, j] = max_i (delta[t-1, i] + log_trans[i, j]) + log_emit[t, j]
+        scores = delta[t - 1, :, None] + log_trans  # (K, K) broadcast
+        psi[t]   = np.argmax(scores, axis=0)
+        delta[t] = scores[psi[t], np.arange(K)] + log_emit[t]
+    path = np.empty(T, dtype=np.int64)
+    path[-1] = int(np.argmax(delta[-1]))
+    for t in range(T - 2, -1, -1):
+        path[t] = psi[t + 1, path[t + 1]]
+    return path
+
+
+def _bar_posteriors(
+    bar_chords: list[dict],
+    times: np.ndarray,
+    chord_probs: np.ndarray,
+) -> np.ndarray:
+    """Sum crema's per-frame posteriors over each bar's time window.
+
+    Returns (n_bars, n_classes).  Empty bars (no frames within window) get a
+    uniform distribution so Viterbi falls back to transition prior alone.
+    """
+    n_bars = len(bar_chords)
+    n_cls  = chord_probs.shape[1]
+    out = np.zeros((n_bars, n_cls), dtype=np.float64)
+
+    if n_bars >= 2:
+        bar_duration = bar_chords[1]["time"] - bar_chords[0]["time"]
+    else:
+        bar_duration = 2.0
+
+    for i, bar in enumerate(bar_chords):
+        t_start = bar["time"]
+        t_end   = (bar_chords[i + 1]["time"]
+                   if i + 1 < n_bars else t_start + bar_duration)
+        mask = (times >= t_start) & (times < t_end)
+        if mask.any():
+            out[i] = chord_probs[mask].mean(axis=0)
+        else:
+            out[i] = 1.0 / n_cls
+    # Avoid log(0) downstream
+    out = np.clip(out, 1e-12, 1.0)
+    return out
+
+
+def _apply_viterbi_smoothing(
+    bar_chords: list[dict],
+    times: np.ndarray,
+    chord_probs: np.ndarray,
+    vocab: list[str],
+    key_root: int,
+    key_mode: str,
+    stay_prob: float = 0.35,
+    cadence_boost: float = 4.0,
+) -> tuple[list[dict], list[int]]:
+    """
+    Replace bar chord labels with the music-theory-aware Viterbi sequence.
+
+    Steps:
+      1. Per-bar crema posterior (n_bars, 170) ← sum over bar window.
+      2. Marginalise to (n_bars, 24) on (root, mode).
+      3. 24×24 transition matrix conditioned on (key_root, key_mode).
+      4. Viterbi decode → per-bar (root, mode).
+      5. For each bar where Viterbi disagrees with the current label's
+         (root, mode), keep the original CHORD QUALITY by picking the
+         highest-posterior 170-class chord whose root/mode matches Viterbi's
+         pick (so "C:maj7" can become "G:maj7" but not "G:maj" if the
+         original quality was 7th).  Mid-bar splits skipped — multi-segment
+         bars indicate explicit fine-grained detection that we don't want
+         Viterbi to flatten.
+
+    Returns (bar_chords, list_of_bar_numbers_changed).
+    """
+    if not bar_chords or chord_probs.size == 0:
+        return bar_chords, []
+
+    # 1. Per-bar posteriors and marginalised root/mode posteriors
+    bar_p     = _bar_posteriors(bar_chords, times, chord_probs)  # (n_bars, 170)
+    rm_p      = _marginalize_crema_to_root_mode(bar_p, vocab)    # (n_bars, 24)
+    log_emit  = np.log(rm_p + 1e-12)
+    log_trans = _build_key_transition_matrix(
+        key_root, key_mode, stay_prob=stay_prob, cadence_boost=cadence_boost,
+    )
+
+    # 2. Viterbi
+    path = _viterbi_decode(log_emit, log_trans)   # (n_bars,) ints in [0..24)
+
+    # 3. Apply — for single-segment bars where Viterbi disagrees, swap label
+    changed: list[int] = []
+    # Pre-index vocab by (root, mode) for fast best-quality lookup
+    vocab_by_rm: dict[int, list[int]] = {}
+    for j, lbl in enumerate(vocab):
+        if ":" not in lbl:
+            continue
+        rs, q = lbl.split(":", 1)
+        r = _ROOT_TO_SEMITONE.get(rs)
+        if r is None:
+            continue
+        is_minor = q.startswith("min") or q.startswith("dim") or q == "hdim7"
+        rm_idx = r * 2 + (1 if is_minor else 0)
+        vocab_by_rm.setdefault(rm_idx, []).append(j)
+
+    for i, bar in enumerate(bar_chords):
+        if len(bar["segments"]) != 1:
+            continue  # don't smooth bars with explicit mid-bar splits
+        seg = bar["segments"][0]
+        cur_label = seg["chord"]
+        if ":" not in cur_label:
+            continue
+        cur_root_str, cur_q = cur_label.split(":", 1)
+        cur_root = _ROOT_TO_SEMITONE.get(cur_root_str)
+        if cur_root is None:
+            continue
+        cur_is_minor = cur_q.startswith("min") or cur_q.startswith("dim") or cur_q == "hdim7"
+        cur_rm = cur_root * 2 + (1 if cur_is_minor else 0)
+
+        new_rm = int(path[i])
+        if new_rm == cur_rm:
+            continue
+
+        # Viterbi disagrees — pick best-posterior label with new (root, mode)
+        candidates = vocab_by_rm.get(new_rm, [])
+        if not candidates:
+            continue
+        best_j   = max(candidates, key=lambda j: bar_p[i, j])
+        new_label = vocab[best_j]
+        seg["chord"] = new_label
+        # Posterior confidence for the new chord
+        seg["confidence"] = float(bar_p[i, best_j])
+        changed.append(bar["bar"])
+
+    if changed:
+        print(f"  [viterbi] {len(changed)} bar(s) relabelled by key-conditioned smoothing "
+              f"(key: root={key_root}, mode={key_mode})")
+    else:
+        print("  [viterbi] no changes (crema already consistent with key prior)")
+    return bar_chords, changed
 
 
 # ---------------------------------------------------------------------------
@@ -1345,11 +1787,14 @@ def _apply_section_consistency(
                 # 2-segment (mid-bar-split) winner would distort timing.
                 if len(bar["segments"]) != len(winner_segments):
                     continue
-                cur_chords = [s["chord"] for s in bar["segments"]]
-                if cur_chords == winner_chords:
+                # Compare (chord, bass_pc) pairs so an inversion change is
+                # also treated as a difference worth correcting.
+                cur_pairs = [(s["chord"], s.get("bass_pc")) for s in bar["segments"]]
+                win_pairs = [(s["chord"], s.get("bass_pc")) for s in winner_segments]
+                if cur_pairs == win_pairs:
                     continue
                 bar["segments"] = [
-                    {**orig, "chord": win["chord"]}
+                    {**orig, "chord": win["chord"], "bass_pc": win.get("bass_pc")}
                     for orig, win in zip(bar["segments"], winner_segments)
                 ]
                 changed_bars.add(bar["bar"])
@@ -1455,7 +1900,9 @@ def main() -> None:
     y_chords = _apply_hpss_preprocessing(
         y, sr, args.hpss_mode, args.drums_wav, args.hpss_margin, args.sample_rate,
     )
-    times, confidence, labels = detect_chords_crema(y_chords, sr)
+    # crema_probs is the full per-frame posterior matrix (n_frames, n_classes);
+    # crema_vocab maps column index → label. Needed by --viterbi-smoothing.
+    times, confidence, labels, crema_probs, crema_vocab = detect_chords_crema(y_chords, sr)
     _emit("crema", 0.45, f"{len(times)} frames")
     hop = int(round((times[1] - times[0]) * sr)) if len(times) > 1 else 4096
     print(f"  {len(times)} frames  |  mean confidence: {confidence.mean():.1%}")
@@ -1584,15 +2031,43 @@ def main() -> None:
         )
         print(f"  → {len(key_snapped)} bar(s) snapped to diatonic chord")
 
+    # ── Viterbi smoothing ──
+    # Runs BEFORE bass-anchor / slash so the corrected sequence flows into
+    # the bass-driven passes.  Bars whose Viterbi pick disagrees with crema
+    # get their chord label replaced with the best-posterior chord of the
+    # Viterbi-picked (root, mode).
+    viterbi_relabeled: list[int] = []
+    if args.viterbi_smoothing:
+        bar_chords, viterbi_relabeled = _apply_viterbi_smoothing(
+            bar_chords, times, crema_probs, crema_vocab,
+            key_root=key_root, key_mode=key_mode,
+            stay_prob=args.viterbi_stay_prob,
+            cadence_boost=args.viterbi_cadence_boost,
+        )
+
     # ── Bass-anchored root correction ──
-    # Runs after madmom-fallback and key-snap (so quality fixes land first) but
-    # BEFORE section consistency (so consistency sees the corrected roots).
+    # Runs after madmom-fallback, key-snap, and Viterbi (so they all get a
+    # chance to fix the chord first) but BEFORE slash-chord tagging (which
+    # operates on the *corrected* root) and section-consistency.
     bass_anchored: list[int] = []
     if args.bass_anchor:
         if not args.bass_wav:
             print("  [bass-anchor] enabled but --bass-wav not provided — skipping")
         else:
             bar_chords, bass_anchored = _apply_bass_anchor(
+                bar_chords, args.bass_wav, args.sample_rate,
+                margin_threshold=args.bass_anchor_margin,
+            )
+
+    # ── Slash chord (inversion) labelling ──
+    # Reuses the bass stem.  Tags seg["bass_pc"] when bass is a chord tone
+    # other than the root; renderers consult this for slash notation.
+    slash_chord_bars: list[int] = []
+    if args.slash_chords:
+        if not args.bass_wav:
+            print("  [slash-chords] enabled but --bass-wav not provided — skipping")
+        else:
+            bar_chords, slash_chord_bars = _apply_slash_chords(
                 bar_chords, args.bass_wav, args.sample_rate,
                 margin_threshold=args.bass_anchor_margin,
             )
@@ -1644,10 +2119,12 @@ def main() -> None:
                 low_conf = sum(1 for s in all_segs if s["confidence"] < args.threshold)
                 low_pct  = 100 * low_conf / max(len(all_segs), 1)
 
-    madmom_bar_set     = set(madmom_substituted)
-    key_snap_bar_set   = set(key_snapped)
-    bass_anchor_set    = set(bass_anchored)
+    madmom_bar_set      = set(madmom_substituted)
+    key_snap_bar_set    = set(key_snapped)
+    bass_anchor_set     = set(bass_anchored)
     section_consist_set = set(section_consistent)
+    slash_chord_set     = set(slash_chord_bars)
+    viterbi_set         = set(viterbi_relabeled)
     print("\n  Chord summary (changes only):")
     prev = None
     for bar in bar_chords:
@@ -1657,13 +2134,19 @@ def main() -> None:
         if bar["bar"] in key_snap_bar_set:    tags.append("key snap")
         if bar["bar"] in bass_anchor_set:     tags.append("bass-anchor")
         if bar["bar"] in section_consist_set: tags.append("section-consistency")
+        if bar["bar"] in slash_chord_set:     tags.append("slash")
+        if bar["bar"] in viterbi_set:         tags.append("viterbi")
         tag = f"  [{', '.join(tags)}]" if tags else ""
         for seg in bar["segments"]:
-            if seg["chord"] != prev:
+            # Pair chord identity with its bass annotation so a change of bass
+            # (same chord, different inversion) also gets printed.
+            seg_id = (seg["chord"], seg.get("bass_pc"))
+            if seg_id != prev:
                 flag   = " ?" if seg["confidence"] < args.threshold else ""
                 prefix = f"Bar {bar['bar']:>3}" if beat_pos == 1 else f"      beat {beat_pos}"
-                print(f"    {prefix}  {seg['time']:>6.1f}s  {crema_to_display(seg['chord'], use_sharps):<8}  ({seg['confidence']:.0%}{flag}){tag if beat_pos == 1 else ''}")
-                prev = seg["chord"]
+                display = crema_to_display(seg["chord"], use_sharps, seg.get("bass_pc"))
+                print(f"    {prefix}  {seg['time']:>6.1f}s  {display:<10}  ({seg['confidence']:.0%}{flag}){tag if beat_pos == 1 else ''}")
+                prev = seg_id
             beat_pos += seg["beats"]
 
     # Build subtitle  (key_stmt and key_display already computed from chromagram above)

@@ -84,6 +84,14 @@ export type AdvancedState = {
   // Section-aware chord consistency: forces same-named sections to share
   // their progression. Requires section detection — disabled when off.
   sectionConsistency: boolean;
+  // Slash chord (inversion) labelling. Reuses the bass stem; requires stems.
+  // Auto-cleared when the user disables stems.
+  slashChords: boolean;
+  // Key-conditioned Viterbi smoothing. Uses crema posteriors only — no
+  // stems dependency, no prerequisite beyond having a key (which we always do).
+  viterbiSmoothing: boolean;
+  viterbiStayProb: string;
+  viterbiCadenceBoost: string;
   deleteOnDownload: boolean;
 
   // Stem Splitting
@@ -170,6 +178,10 @@ export const DEFAULT_ADVANCED: AdvancedState = {
   bassAnchor: false,
   bassAnchorMargin: "0.55",
   sectionConsistency: false,
+  slashChords: false,
+  viterbiSmoothing: false,
+  viterbiStayProb: "0.35",
+  viterbiCadenceBoost: "4.0",
   deleteOnDownload: false,
 
   // Stem Splitting
@@ -444,6 +456,41 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
             </Hint>
 
             <Row>
+              <Check
+                label={
+                  value.skipStems
+                    ? "Detect slash chords (inversions) — enable Stem Splitting first"
+                    : "Detect slash chords (C/E, G/B, Am/C) using the bass stem"
+                }
+                checked={value.slashChords && !value.skipStems}
+                onChange={(v) => {
+                  if (value.skipStems) return;
+                  patch("slashChords", v);
+                }}
+              />
+            </Row>
+            <Hint>
+              When the bass plays a chord tone that isn&apos;t the root (the 3rd or 5th), label
+              the chord as an inversion. Lots of pop songs use descending bass lines like
+              <code> C – G/B – Am – F </code>; without this they&apos;d all read as plain triads.
+              Reuses the bass stem from Stem Splitting, so it&apos;s essentially free once
+              you&apos;re running stems.
+            </Hint>
+            <Row>
+              <Check
+                label="Smooth chord sequence with key-aware Viterbi"
+                checked={value.viterbiSmoothing}
+                onChange={(v) => patch("viterbiSmoothing", v)}
+              />
+            </Row>
+            <Hint>
+              Replaces the per-bar greedy chord pick with a sequence-level decode that
+              prefers music-theoretic transitions (V→I and IV→I cadences over a stray
+              Bdim in C major, etc.). Catches one-off misdetections nothing else catches.
+              Doesn&apos;t need stems. Bars with explicit mid-bar splits are left alone.
+            </Hint>
+
+            <Row>
               <Check label="Keep 7th qualities (maj7, m7, dom7)"     checked={value.add7th}          onChange={(v) => patch("add7th", v)} />
               <Check label="Secondary model for low-confidence bars (slower)" checked={value.madmomFallback}  onChange={(v) => patch("madmomFallback", v)} />
             </Row>
@@ -521,6 +568,22 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
                   />
                 </Row>
               )}
+              {value.viterbiSmoothing && (
+                <Row>
+                  <NumberField
+                    label="Viterbi stay-prob (0.05–0.95; higher = stickier chords)"
+                    value={value.viterbiStayProb}
+                    onChange={(v) => patch("viterbiStayProb", v)}
+                    step="0.05"
+                  />
+                  <NumberField
+                    label="Viterbi cadence boost (1–20; higher = stronger V→I bias)"
+                    value={value.viterbiCadenceBoost}
+                    onChange={(v) => patch("viterbiCadenceBoost", v)}
+                    step="0.5"
+                  />
+                </Row>
+              )}
               <Hint>
                 Confidence thresholds. Only adjust if the chart consistently misfires on your music.
               </Hint>
@@ -561,6 +624,7 @@ export function AdvancedSettings({ value, onChange, disabled }: Props) {
                     const next = { ...value, skipStems: true };
                     if (value.hpssMode === "hpss-no-drums") next.hpssMode = "hpss";
                     if (value.bassAnchor)                   next.bassAnchor = false;
+                    if (value.slashChords)                  next.slashChords = false;
                     onChange(next);
                   } else {
                     patch("skipStems", v);
@@ -866,6 +930,14 @@ export function toSettingsPayload(a: AdvancedState) {
     bassAnchorMargin:   num(a.bassAnchorMargin),
     // Section consistency only emitted when section detection is on.
     sectionConsistency: a.sectionConsistency && a.detectSections ? true : undefined,
+    // Slash chords only emitted when stems are on (same constraint as
+    // bass-anchor).  UI guards prevent toggling the checkbox under skipStems,
+    // mirror here for defence-in-depth against stale state.
+    slashChords:        a.slashChords && !a.skipStems ? true : undefined,
+    // Viterbi smoothing has no stems / sections prerequisite; just forward.
+    viterbiSmoothing:   a.viterbiSmoothing || undefined,
+    viterbiStayProb:    num(a.viterbiStayProb),
+    viterbiCadenceBoost:num(a.viterbiCadenceBoost),
 
     // ── Stem-splitting library knobs ──
     demucsShifts:      int(a.demucsShifts),

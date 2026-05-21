@@ -172,6 +172,15 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
     args.push("--bass-anchor-margin", String(s.bassAnchorMargin));
   // Section-aware chord consistency (post-processing; needs section detection).
   if (s.sectionConsistency) args.push("--section-consistency");
+  // Slash chord (inversion) labelling. Server enforces the stems prerequisite
+  // (same as bass-anchor); the UI guards against the bad combo too.
+  if (s.slashChords) args.push("--slash-chords");
+  // Key-conditioned Viterbi smoothing. Tuning knobs only forwarded when non-default.
+  if (s.viterbiSmoothing) args.push("--viterbi-smoothing");
+  if (s.viterbiStayProb !== undefined && s.viterbiStayProb !== 0.35)
+    args.push("--viterbi-stay-prob", String(s.viterbiStayProb));
+  if (s.viterbiCadenceBoost !== undefined && s.viterbiCadenceBoost !== 4.0)
+    args.push("--viterbi-cadence-boost", String(s.viterbiCadenceBoost));
 
   // ── Stem-splitting library knobs ──
   if (s.demucsShifts !== undefined && s.demucsShifts !== 1) args.push("--demucs-shifts", String(s.demucsShifts));
