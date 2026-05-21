@@ -55,9 +55,9 @@ export const SettingsSchema = z.object({
   keySnapThreshold: z.number().min(0).max(1).optional(),
   halfTime: z.boolean().optional(),
   compound: z.boolean().optional(),
-  // Disable MSAF structural segmentation — no A/B/C rehearsal marks on the PDF
-  // or in the MusicXML. Set this if MSAF mis-segments and the marks distract.
   skipSections: z.boolean().optional(),
+  sectionThreshold: z.number().min(0).max(1).optional(),
+  deleteOnDownload: z.boolean().optional(),
 
   // Stems
   skipStems: z.boolean().optional(),
@@ -85,9 +85,23 @@ export const SettingsSchema = z.object({
 
   // ── Chord-detection library knobs ──
   barPhase:           z.boolean().optional(),
-  msafBoundariesId:   z.enum(["sf", "foote", "cnmf", "scluster", "vmo", "olda"]).optional(),
-  msafLabelsId:       z.enum(["fmc2d", "cnmf", "scluster"]).optional(),
   confidenceWarn:     z.number().min(0).max(1).optional(),
+  hpssMode:           z.enum(["off", "hpss", "hpss-no-drums"]).optional(),
+  hpssMargin:         z.number().min(0.1).max(20).optional(),
+  // Bass-anchored root: overrides crema's chord root with the bass stem's
+  // dominant pitch when chroma confidence is high. Requires stems.
+  bassAnchor:         z.boolean().optional(),
+  bassAnchorMargin:   z.number().min(0.3).max(0.95).optional(),
+  // Section-aware chord consistency: forces same-named sections to share
+  // their progression. Requires section detection.
+  sectionConsistency: z.boolean().optional(),
+  // Slash chord (inversion) labelling. Uses the bass stem; requires stems.
+  slashChords:        z.boolean().optional(),
+  // Key-conditioned Viterbi smoothing. Operates on crema posteriors; no
+  // stems dependency. The stay/cadence knobs are tuning surface only.
+  viterbiSmoothing:   z.boolean().optional(),
+  viterbiStayProb:    z.number().min(0.05).max(0.95).optional(),
+  viterbiCadenceBoost:z.number().min(1.0).max(20.0).optional(),
 
   // ── Stem-splitting library knobs ──
   demucsShifts:      z.number().int().min(1).max(10).optional(),

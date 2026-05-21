@@ -81,9 +81,22 @@ Don't warp at all. Use this if the file is already a click-tight render (a progr
 
 ### Allow tempo change (skip the multi-tempo guard)
 Normally the stabilizer stops with an error if it detects a sustained tempo change between sections — a single-tempo warp would mangle audio across the boundary. Enable this only if you accept that the warp will be musically wrong at the tempo change.
+
+**Note:** the guard already ignores pure octave flips. If the beat tracker hears the first half in quarter notes (say 105 BPM) and the second half in eighth notes (~210 BPM), that's not a real tempo change — it's the same tempo at a different metrical level — and the guard will let the file through. You only need this checkbox for *genuine* arrangement-level tempo shifts (a ballad section at 70 BPM followed by a chorus at 90 BPM, say).
+
 **Default:** Off (guard on).
 
-### Library tuning — intro trim, tempo guard, rubberband
+### Library tuning — intro trim, tempo guard, beat octaves, rubberband
+
+#### Beat-octave normalization
+On by default. After beat detection, the stabilizer walks the beat list and looks for sections where the tracker locked onto eighth notes (gap ≈ ½ the running quarter-note interval) or half notes (gap ≈ 2×) — common mid-song flips. Doubled beats get thinned, halved gaps get a midpoint inserted, so the warper sees a consistent quarter-note grid throughout. Without this, an octave flip mid-song would stretch the doubled-density section to 2× its real length.
+
+Tolerance is ±18 % of the target ratio, so legitimate 1.3× / 1.5× tempo changes still trip the regular tempo-change guard.
+
+**When to change:** turn off only if you suspect this is misfiring on a genuinely variable-tempo song.
+**CLI flag (no UI toggle yet):** `--no-beat-octave-normalize`.
+**Default:** On.
+
 
 #### Intro trim (bars)
 How many bars to keep before the first beat when trimming. 1 is one bar; 2 gives you a 2-bar pickup, etc. 0 trims right up to the first beat.
@@ -116,6 +129,64 @@ A floor in absolute BPM so the percentage threshold doesn't fire on tiny absolut
 
 Listens to the stabilised audio, finds the chords on each beat, and renders a PDF + MusicXML lead sheet with section markers (A/B/C boxes).
 
+### Chord input cleaning (HPSS)
+Pre-processes the audio with **Harmonic-Percussive Source Separation** before the chord model sees it, so the model isn't distracted by drum hits. Three modes:
+
+- **Off** — the chord model gets the full mix.
+- **HPSS** *(default)* — strip drum transients via `librosa.effects.hpss`. Near-free quality bump on any mix with drums; key and beat detection still use the raw signal.
+- **HPSS + drum removal** — also subtract the drums stem, then HPSS the residual. Best quality on percussive or dense mixes, but Demucs has to run before chord detection (~30 s – 2 min added). Requires Stem Splitting enabled; the option is greyed out otherwise.
+
+**When to change:** drop to **Off** if you're hearing weird chord artefacts that line up with the drum hits and you want a baseline comparison. Move to **HPSS + drum removal** if drums are dominating a busy mix and crowding out the harmony.
+**Default:** HPSS.
+
+#### HPSS margin (advanced)
+How aggressively to split harmonic from percussive content. 1.0 = gentle, 3.0 = default, 6.0+ = aggressive (may also strip sustained harmonic material). Only adjust if HPSS is misfiring.
+**Default:** 3.0.
+
+### Anchor chord roots to bass stem
+Uses the isolated bass stem to **fix wrong chord roots**. When the bass clearly plays one note and that pitch disagrees with what the chord model picked, swap the root (keeping the same chord quality). Corrects relative-minor confusions and inversions-labelled-as-the-bass-note's-chord — the two error classes the chord model gets wrong most often.
+
+Requires Stem Splitting (Demucs runs before chord detection, ~30 s – 2 min). The option is greyed out otherwise. Disabling Stem Splitting after this is on auto-clears it.
+
+**When to change:** turn **On** for any song where you suspect root-detection errors (e.g. a clear minor song coming out as the relative major, or a slash-chord progression labelled as plain triads).
+**Default:** Off.
+
+#### Bass-anchor margin (advanced)
+How clean the bass has to be before it's allowed to override the chord. 0.55 = default; 0.95 = only override on a single, completely unambiguous bass note. Lower it on bass-heavy mixes; raise it if you see spurious overrides on walking bass lines.
+**Default:** 0.55.
+
+### Detect slash chords (C/E, G/B, Am/C)
+When the bass plays a chord tone that **isn't** the root (the 3rd or 5th), label the chord as an inversion. Pop songs use descending bass lines like `C – G/B – Am – F` everywhere; without this they all read as plain triads.
+
+Reuses the bass stem loaded by *Anchor chord roots to bass stem*, so essentially free if you already have stems running. Requires Stem Splitting enabled.
+
+**When to change:** turn **On** for any song with a noticeable bass line and you want the chart to capture inversion structure.
+**Default:** Off.
+
+### Force same-named sections to share progressions
+If your song has, say, two Choruses and the chord chart shows slightly different progressions for them, this collapses the differences. For each section label that appears more than once, copies the highest-confidence chord progression to all instances. Pure post-processing — costs nothing.
+
+Requires **Detect song sections** to be on. Skips instances of differing bar length (re-aligning a 6-bar chorus with an 8-bar chorus is too risky to do silently).
+
+**When to change:** turn **On** for radio-friendly pop/rock with clear repeating sections. Leave **Off** for free-form material where each verse is genuinely different.
+**Default:** Off.
+
+### Smooth chord sequence with key-aware Viterbi
+Replaces the per-bar greedy chord pick with a sequence-level decode that prefers music-theoretic transitions (V→I cadences over a stray Bdim in C major, etc.). Catches one-off misdetections nothing else catches — the chord engine sees each bar independently, so a single wrong bar in an otherwise-consistent progression is invisible to it.
+
+No stems required. Bars with explicit mid-bar splits are left alone — those are explicit fine-grained detections we don't want to flatten.
+
+**When to change:** turn **On** for any tonal song (most pop / rock / folk / classical). Leave **Off** for highly chromatic or experimental material where the key prior would fight against the real harmony.
+**Default:** Off.
+
+#### Viterbi stay-prob (advanced)
+How "sticky" the smoother is on the current chord. 0.35 = default. Higher = more reluctant to switch chords (cleaner but may miss fast changes); lower = switches more freely.
+**Default:** 0.35. **Range:** 0.05–0.95.
+
+#### Viterbi cadence boost (advanced)
+How much extra weight is given to classical cadences (V→I, IV→I, ii→V in major; v→i, iv→i in minor). 4.0 = default. Higher = stronger pull toward expected cadences; lower = transitions are judged purely on their in-key-ness.
+**Default:** 4.0. **Range:** 1.0–20.0.
+
 ### Keep 7th qualities (maj7, m7, dom7)
 Normally the chart simplifies seventh chords to plain major/minor for readability. Tick this to preserve the seventh quality.
 **When to change:** on jazz, R&B, or any material where the 7ths are essential to the harmony.
@@ -145,9 +216,13 @@ Render in 6/8 even if the detector picks 3/4. They sound similar but feel differ
 **Default:** Off.
 
 ### Detect song sections (A/B/C marks)
-Run structural analysis on the audio and label sections — Intro/A/B/C boxes appear above the chart.
+Run structural analysis (allin1) on the audio and label sections — Intro/A/B/C boxes appear above the chart.
 **When to change:** turn on for clear pop/rock structure. Turn off if section detection misfires and the rehearsal marks distract.
 **Default:** Off.
+
+#### Section boundary threshold (0–1)
+Minimum boundary-strength score for allin1 to accept a section cut. **Blank** (or 0) accepts every local peak (more sections, sometimes too many); around **0.3–0.5** keeps only confident splits. Only adjust if sections are appearing in obviously wrong places — usually the default behaviour is what you want.
+**Default:** blank (use allin1's internal default).
 
 ### Bars per line
 Layout — how many bars to print on each line of the chart.
@@ -175,7 +250,7 @@ The bar's average confidence has to drop below this before the secondary model i
 Only bars below this average confidence are eligible for snapping to the key. Higher = more bars get snapped.
 **Default:** 0.65.
 
-### Library tuning — confidence, MSAF, bar phase
+### Library tuning — confidence, bar phase
 
 #### Low-confidence flag (0–1)
 Chords below this confidence are marked with a `?` in the JSON report and tallied in the warning summary. Doesn't affect what's shown on the PDF.
@@ -185,14 +260,6 @@ Chords below this confidence are marked with a `?` in the JSON report and tallie
 After detecting chord changes, slide the bar grid 0–N beats so chord changes line up with bar starts as much as possible. Off = use the raw beat-1 anchor without realignment.
 **When to change:** turn off if the chart's bar starts are visibly drifting from the audio.
 **Default:** On.
-
-#### MSAF boundaries algorithm
-Which algorithm picks the section boundaries when "Detect song sections" is on. Different algorithms suit different material.
-**Default:** sf.
-
-#### MSAF labels algorithm
-Which algorithm groups sections into repeated labels (so a repeated chorus shares one letter).
-**Default:** fmc2d.
 
 ---
 

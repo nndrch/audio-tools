@@ -58,7 +58,15 @@ def load_audio_mono(path: str, sr: int = 44100) -> tuple[np.ndarray, int]:
         y = y.mean(axis=1)
 
     if sr_orig != sr:
-        y = librosa.resample(y, orig_sr=sr_orig, target_sr=sr)
+        # Use numpy linear interpolation to avoid scipy.fft / resampy deadlocks
+        # on macOS (scipy 1.15+ hangs on import of scipy.fft in subprocesses).
+        # Linear interpolation is sufficient for beat/key/timesig detection.
+        n_out = int(round(len(y) * sr / sr_orig))
+        y = np.interp(
+            np.linspace(0, len(y) - 1, n_out),
+            np.arange(len(y)),
+            y,
+        ).astype(np.float32)
 
     return y.astype(np.float32), sr
 
@@ -67,15 +75,23 @@ def load_audio_mono(path: str, sr: int = 44100) -> tuple[np.ndarray, int]:
 # Chord detection via crema
 # ---------------------------------------------------------------------------
 
-def detect_chords_crema(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def detect_chords_crema(
+    y: np.ndarray, sr: int,
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, list[str]]:
     """
     Run crema chord estimator.
 
     Returns
     -------
-    times      : (n_frames,) frame centre times in seconds
-    confidence : (n_frames,) max probability per frame [0–1]
-    labels     : (n_frames,) chord label strings e.g. 'A:min7', 'C:maj', 'N'
+    times       : (n_frames,) frame centre times in seconds
+    confidence  : (n_frames,) max probability per frame [0–1]
+    labels      : (n_frames,) chord label strings e.g. 'A:min7', 'C:maj', 'N'
+    chord_probs : (n_frames, n_classes) full posterior matrix
+    vocab       : list of n_classes label strings (column index → label)
+
+    The full posterior matrix + vocab are needed by the Viterbi smoother and
+    any downstream code that wants to reason about the full distribution
+    rather than just the argmax.
     """
     import crema
 
@@ -97,7 +113,7 @@ def detect_chords_crema(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray,
     hop   = task.hop_length
     times = librosa_frames_to_time(hop, sr, len(chord_idx))
 
-    return times, confidence, labels
+    return times, confidence, labels, chord_probs, vocab
 
 
 def librosa_frames_to_time(hop: int, sr: int, n_frames: int) -> np.ndarray:
@@ -386,7 +402,7 @@ def main() -> None:
 
     # 2. Detect chords
     print("\n[2/4] Detecting chords (crema) …")
-    times, confidence, labels = detect_chords_crema(y, sr)
+    times, confidence, labels, _crema_probs, _crema_vocab = detect_chords_crema(y, sr)
     print(f"  {len(times)} frames analysed")
     print(f"  Mean confidence: {confidence.mean():.1%}  |  Min: {confidence.min():.1%}  |  Max: {confidence.max():.1%}")
 

@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { ModelWarningBanner } from "@/components/ModelWarningBanner";
 import { DropZone } from "@/components/DropZone";
 import { SongInfo } from "@/components/SongInfo";
 import {
@@ -132,6 +133,9 @@ export default function UploadPage() {
   return (
     <main className="min-h-screen bg-white flex justify-center px-4 py-12">
       <div className="w-full max-w-xl space-y-5">
+
+        {/* Model availability warning */}
+        <ModelWarningBanner />
 
         {/* Header */}
         <header className="space-y-3">

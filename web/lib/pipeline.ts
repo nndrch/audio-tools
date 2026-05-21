@@ -23,6 +23,7 @@ const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
   start: "Starting…",
   stabilize: "Stabilizing beats…",
+  sections: "Detecting song sections…",
   chord: "Generating chord chart…",
   stems: "Splitting stems…",
   finalize: "Packaging download…",
@@ -120,7 +121,7 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
   if (s.add7th)                 args.push("--add-7th");
   if (s.midBarThreshold !== undefined && s.midBarThreshold !== 0.80)
     args.push("--mid-bar-threshold", String(s.midBarThreshold));
-  if (s.madmomFallback === false) args.push("--no-madmom-fallback");
+  if (s.madmomFallback !== true)  args.push("--no-madmom-fallback");
   if (s.madmomThreshold !== undefined && s.madmomThreshold !== 0.70)
     args.push("--madmom-threshold", String(s.madmomThreshold));
   if (s.keyTiebreak)            args.push("--key-tiebreak");
@@ -130,6 +131,8 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
   if (s.halfTime)               args.push("--half-time");
   if (s.compound)               args.push("--compound");
   if (s.skipSections)           args.push("--skip-sections");
+  if (s.sectionThreshold !== undefined && s.sectionThreshold !== 0)
+    args.push("--section-threshold", String(s.sectionThreshold));
 
   // Stems
   if (s.skipStems)              args.push("--skip-stems");
@@ -157,9 +160,27 @@ function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[
 
   // ── Chord-detection library knobs ──
   if (s.barPhase === false) args.push("--no-bar-phase");
-  if (s.msafBoundariesId && s.msafBoundariesId !== "sf") args.push("--msaf-boundaries-id", s.msafBoundariesId);
-  if (s.msafLabelsId && s.msafLabelsId !== "fmc2d") args.push("--msaf-labels-id", s.msafLabelsId);
   if (s.confidenceWarn !== undefined && s.confidenceWarn !== 0.45) args.push("--confidence-warn", String(s.confidenceWarn));
+  // HPSS preprocessing (default in pipeline.py is "hpss"; only push when different)
+  if (s.hpssMode && s.hpssMode !== "hpss") args.push("--hpss-mode", s.hpssMode);
+  if (s.hpssMargin !== undefined && s.hpssMargin !== 3.0) args.push("--hpss-margin", String(s.hpssMargin));
+  // Bass-anchored root correction (requires stems — server enforces, UI guards).
+  // The bass-anchor-margin flag is currently exposed only for tuning; we forward it
+  // when non-default so testers can iterate without touching CLI.
+  if (s.bassAnchor) args.push("--bass-anchor");
+  if (s.bassAnchorMargin !== undefined && s.bassAnchorMargin !== 0.55)
+    args.push("--bass-anchor-margin", String(s.bassAnchorMargin));
+  // Section-aware chord consistency (post-processing; needs section detection).
+  if (s.sectionConsistency) args.push("--section-consistency");
+  // Slash chord (inversion) labelling. Server enforces the stems prerequisite
+  // (same as bass-anchor); the UI guards against the bad combo too.
+  if (s.slashChords) args.push("--slash-chords");
+  // Key-conditioned Viterbi smoothing. Tuning knobs only forwarded when non-default.
+  if (s.viterbiSmoothing) args.push("--viterbi-smoothing");
+  if (s.viterbiStayProb !== undefined && s.viterbiStayProb !== 0.35)
+    args.push("--viterbi-stay-prob", String(s.viterbiStayProb));
+  if (s.viterbiCadenceBoost !== undefined && s.viterbiCadenceBoost !== 4.0)
+    args.push("--viterbi-cadence-boost", String(s.viterbiCadenceBoost));
 
   // ── Stem-splitting library knobs ──
   if (s.demucsShifts !== undefined && s.demucsShifts !== 1) args.push("--demucs-shifts", String(s.demucsShifts));

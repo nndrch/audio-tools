@@ -16,10 +16,6 @@ numpy>=1.24,<2.0
 # Pure-Python, no native deps.
 music21>=9.1.0
 
-# Structural segmentation (Phase 3). Pulls in seaborn/cvxopt as transitive
-# deps. We monkey-patch scipy.inf for compatibility at import time.
-msaf>=0.1.80
-
 # Render PDF page 1 to PNG for inline preview on the done page (embedded
 # PDF viewers are flaky across browsers/sandboxes).
 pymupdf>=1.24.0
