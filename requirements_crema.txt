@@ -19,3 +19,7 @@ music21>=9.1.0
 # Render PDF page 1 to PNG for inline preview on the done page (embedded
 # PDF viewers are flaky across browsers/sandboxes).
 pymupdf>=1.24.0
+
+# Chord-recognition evaluation harness (eval/): MIREX-style weighted chord
+# recall. Pure-Python, no native deps.
+mir_eval>=0.7

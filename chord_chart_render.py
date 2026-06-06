@@ -801,48 +801,58 @@ def detect_sections(
 # MusicXML generation  (editable in MuseScore / Sibelius)
 # ---------------------------------------------------------------------------
 #
-# music21's ChordSymbol expects flats spelled as "-" (e.g. "B-m7" for Bbm7) and
-# rejects some labels the rest of the codebase emits ("ø7", "mM7" via parens,
-# etc.).  _crema_to_m21_figure() translates between the two conventions.
+# music21's ChordSymbol is built from an explicit (root, kind, bass) rather than
+# a figure string: figure-string parsing silently mis-reads several qualities we
+# emit (e.g. "Bm7b5" decodes to minor-seventh, not half-diminished; an unknown
+# suffix collapses to a bare major triad).  Building from the kind-value enum
+# guarantees the correct MusicXML <kind>, and chordKindStr sets the printed
+# symbol so charts read consistently across renderers (Berklee §6).
 
-# Quality suffix mapping for music21.harmony.ChordSymbol.figure
-_QUALITY_TO_M21 = {
-    "maj":     "",       "min":     "m",
-    "7":       "7",      "maj7":    "maj7",
-    "min7":    "m7",     "dim":     "dim",
-    "dim7":    "dim7",   "hdim7":   "m7b5",
-    "aug":     "aug",    "sus2":    "sus2",
-    "sus4":    "sus4",   "maj6":    "6",
-    "min6":    "m6",     "minmaj7": "mM7",
+# crema quality  →  MusicXML kind-value enum (MusicXML 4.0 §5).
+_QUALITY_TO_M21_KIND = {
+    "maj":     "major",             "min":     "minor",
+    "7":       "dominant",          "maj7":    "major-seventh",
+    "min7":    "minor-seventh",     "dim":     "diminished",
+    "dim7":    "diminished-seventh", "hdim7":  "half-diminished",
+    "aug":     "augmented",         "sus2":    "suspended-second",
+    "sus4":    "suspended-fourth",  "maj6":    "major-sixth",
+    "min6":    "minor-sixth",       "minmaj7": "major-minor",
 }
 
 
-def _crema_to_m21_figure(label: str, use_sharps: bool = False, bass_pc: int | None = None) -> str | None:
+def _crema_to_m21_parts(
+    label: str, use_sharps: bool = False, bass_pc: int | None = None,
+) -> tuple[str, str, str | None, str] | None:
     """
-    Convert a crema-style chord label (e.g. 'Bb:min7', 'C#:maj7') into a
-    music21 ChordSymbol figure string ('B-m7', 'C#maj7').  Returns None for
-    N/X/empty labels which become rests in the score.
+    Translate a crema-style chord label ('Bb:min7', 'C#:maj7', 'G:7') into the
+    pieces music21's ChordSymbol needs: (root, kind, bass, display_text).
 
-    If `bass_pc` is provided and differs from the chord root, append slash
-    notation ("Am/E", "Cmaj7/G").  music21's ChordSymbol parses this directly
-    and exports a proper MusicXML <bass> element.
+    Returns None for N/X/empty labels (no <harmony> is emitted for those).
+
+    - root / bass are spelled to the key's accidental policy, with flats as
+      music21's "-" (e.g. "B-" for Bb).
+    - kind is a MusicXML kind-value enum string; an unknown quality falls back to
+      the *nearest* base (major/minor via _QUALITY_TO_SIMPLE), never silently to
+      major (MusicXML 4.0 §7).
+    - display_text is the printed chord suffix (Berklee spelling, e.g. "ø7",
+      "maj7", "m") — the same string the PDF/terminal use, so all three agree.
     """
     if label in ("N", "X", ""):
         return None
     root, quality = label.split(":", 1) if ":" in label else (label, "maj")
-    # Normalise spelling to the key's accidental policy first.
     root = _FLAT_TO_SHARP_ROOT.get(root, root) if use_sharps else _SHARP_TO_FLAT_ROOT.get(root, root)
-    # music21 uses "-" for flat, not "b"
     if root.endswith("b") and len(root) > 1:
         root = root[:-1] + "-"
-    figure = root + _QUALITY_TO_M21.get(quality, "")
+    kind = _QUALITY_TO_M21_KIND.get(quality)
+    if kind is None:
+        kind = "minor" if _QUALITY_TO_SIMPLE.get(quality, "maj") == "min" else "major"
+    text = _QUALITY_DISPLAY.get(quality, "")
+    bass = None
     if bass_pc is not None:
-        bass_root = _bass_pc_to_name(bass_pc, use_sharps)
-        if bass_root:
-            if bass_root.endswith("b") and len(bass_root) > 1:
-                bass_root = bass_root[:-1] + "-"
-            figure = f"{figure}/{bass_root}"
-    return figure
+        bass_name = _bass_pc_to_name(bass_pc, use_sharps)
+        if bass_name:
+            bass = (bass_name[:-1] + "-") if bass_name.endswith("b") and len(bass_name) > 1 else bass_name
+    return (root, kind, bass, text)
 
 
 def bar_chords_to_musicxml(
@@ -854,6 +864,8 @@ def bar_chords_to_musicxml(
     time_sig_str: str,
     use_sharps: bool = False,
     sections: list[dict] | None = None,
+    bpm: float | None = None,
+    bars_per_line: int = 4,
 ):
     """
     Build a music21 Score containing the chord chart as ChordSymbol events.
@@ -867,10 +879,16 @@ def bar_chords_to_musicxml(
     objects at the right measures so MuseScore / Sibelius show A / B / C
     boxes above the appropriate bars.
     """
-    from music21 import stream, harmony, meter, key as m21key, metadata, note, expressions
+    from music21 import (
+        stream, harmony, meter, key as m21key, metadata, note, expressions,
+        tempo, clef, bar as m21bar, layout, duration as m21duration,
+    )
 
     score = stream.Score()
     score.metadata = metadata.Metadata(title=title)
+    # music21 stamps "Music21" as the composer when none is set, and renderers
+    # print it on the chart.  Blank it out (MusicXML 4.0 §4.2).
+    score.metadata.composer = ""
 
     part = stream.Part()
 
@@ -899,8 +917,23 @@ def bar_chords_to_musicxml(
         for sec in sections:
             section_marks[sec["start_bar"]] = sec["label"]
 
-    for bar in bar_chords:
+    n_bars = len(bar_chords)
+    for idx, bar in enumerate(bar_chords):
         measure = stream.Measure(number=bar["bar"])
+        if idx == 0:
+            # Treble clef (decorative on a slash chart but conventional, §4.6) and
+            # the initial tempo (§4.9 — music21 emits both <metronome> and
+            # <sound tempo>).  Quarter referent matches the 1.0-ql-per-grid-beat
+            # model (including the 6/8 simplification), so the printed metronome
+            # mark and playback tempo agree.
+            measure.clef = clef.TrebleClef()
+            if bpm and bpm > 0:
+                measure.insert(0.0, tempo.MetronomeMark(
+                    number=round(float(bpm)), referent=m21duration.Duration("quarter")))
+        elif bars_per_line > 0 and idx % bars_per_line == 0:
+            # Force ~bars_per_line bars per system so the MusicXML matches the
+            # PDF's line breaks instead of MuseScore auto-packing by density (§4.12).
+            measure.insert(0.0, layout.SystemLayout(isNew=True))
         if bar["bar"] in section_marks:
             measure.insert(0.0, expressions.RehearsalMark(section_marks[bar["bar"]]))
         # Chord symbols at their segment offsets. ChordSymbol renders as a
@@ -908,9 +941,15 @@ def bar_chords_to_musicxml(
         # rhythm-slash notes below.
         offset = 0.0
         for seg in bar["segments"]:
-            figure = _crema_to_m21_figure(seg["chord"], use_sharps, seg.get("bass_pc"))
-            if figure is not None:
-                cs = harmony.ChordSymbol(figure)
+            parts = _crema_to_m21_parts(seg["chord"], use_sharps, seg.get("bass_pc"))
+            if parts is not None:
+                root_m21, kind, bass_m21, text = parts
+                if bass_m21:
+                    cs = harmony.ChordSymbol(root=root_m21, bass=bass_m21, kind=kind)
+                else:
+                    cs = harmony.ChordSymbol(root=root_m21, kind=kind)
+                # Printed symbol (Berklee §6); the <kind> enum carries the meaning.
+                cs.chordKindStr = text
                 cs.duration.quarterLength = seg["beats"] * beat_ql
                 measure.insert(offset, cs)
             offset += seg["beats"] * beat_ql
@@ -923,6 +962,8 @@ def bar_chords_to_musicxml(
             slash.noteheadFill = True
             slash.duration.quarterLength = beat_ql
             measure.insert(b * beat_ql, slash)
+        if idx == n_bars - 1:
+            measure.rightBarline = m21bar.Barline("final")  # §4.11
         part.append(measure)
 
     score.append(part)
@@ -1084,6 +1125,10 @@ Examples:
     )
     p.add_argument("-i", "--input",       required=True)
     p.add_argument("-o", "--output",      default=None,   help="Output PDF path (default: same dir as input)")
+    p.add_argument("--lab-out",           default=None, dest="lab_out",
+                   help="Also write the detected chord sequence as a Harte-style "
+                        ".lab file (tab-separated 'start  end  label' in seconds). "
+                        "Used by the eval harness; off by default.")
     p.add_argument("--title",             default=None,   help="Chart title (default: filename)")
     p.add_argument("--key",               default="auto", help="e.g. 'f:minor', 'bes:major' (default: auto)")
     p.add_argument("--time-sig",          type=int, default=None, dest="time_sig", help="Beats per bar (default: auto)")
@@ -2119,6 +2164,23 @@ def main() -> None:
                 low_conf = sum(1 for s in all_segs if s["confidence"] < args.threshold)
                 low_pct  = 100 * low_conf / max(len(all_segs), 1)
 
+    # Optional: dump the detected chord sequence as a Harte-style .lab
+    # (start  end  label, in seconds) for the eval harness.  Written here —
+    # after every chord-correction pass but before LilyPond rendering — so the
+    # labels are captured even if PDF rendering later fails.  Labels are the
+    # crema "root:quality" strings the codebase already uses (Harte-compatible,
+    # so mir_eval parses them directly); bass/inversion is omitted.
+    if args.lab_out:
+        _interval = float(np.median(np.diff(beat_times))) if len(beat_times) > 1 else 0.5
+        with open(args.lab_out, "w") as _lab:
+            for _bar in bar_chords:
+                for _seg in _bar["segments"]:
+                    _start = float(_seg["time"])
+                    _end   = _start + _seg["beats"] * _interval
+                    _lbl   = _seg["chord"] if _seg["chord"] not in ("", "X") else "N"
+                    _lab.write(f"{_start:.4f}\t{_end:.4f}\t{_lbl}\n")
+        print(f"  Chord .lab: {args.lab_out}")
+
     madmom_bar_set      = set(madmom_substituted)
     key_snap_bar_set    = set(key_snapped)
     bass_anchor_set     = set(bass_anchored)
@@ -2212,6 +2274,8 @@ def main() -> None:
             time_sig_str  = time_sig_str,
             use_sharps    = use_sharps,
             sections      = sections,
+            bpm           = bpm,
+            bars_per_line = args.bars_per_line,
         )
         score.write("musicxml", fp=xml_path)
         musicxml_written = xml_path

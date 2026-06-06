@@ -19,6 +19,14 @@ __pycache__/
 # MSAF (sections detection) writes a feature cache into the cwd
 .features_msaf_tmp.json
 
+# Chord-detection eval harness: detected outputs / scores are reproducible.
+# Ground-truth .lab annotations under eval/dataset/ ARE tracked (they're the
+# hand-labeled test set); audio is ignored by the *.wav/*.mp3/... rules above.
+eval/results/
+
+# Claude Code local agent config (per-machine permissions, not shared)
+.claude/
+
 # Web UI wrapper
 web/node_modules/
 web/.next/
