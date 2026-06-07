@@ -72,8 +72,7 @@ This installs:
 - `venv_madmom/` (Python 3.11 + madmom, NumPy 1.26.4) for beat / downbeat detection and the optional chord fallback
 - `venv_demucs/` (Python 3.11 + PyTorch + Demucs) for stem splitting and backing-track mixing
 
-> **Why separate virtual environments?**
-> `crema` needs TensorFlow 2.x (incompatible with Python 3.13+), `madmom` requires NumPy 1.x with Cython extensions, and Demucs needs PyTorch — they all conflict with each other and with the system Python. Each tool runs in its own isolated environment; `pipeline.py` wires them together automatically.
+> **Why separate virtual environments?** `crema` needs TensorFlow 2.x (incompatible with Python 3.13+), `madmom` requires NumPy 1.x with Cython extensions, and Demucs needs PyTorch — they all conflict with each other and with the system Python. Each tool runs in its own isolated environment; `pipeline.py` wires them together automatically.
 
 The brand fonts (Season Musiversal Sans, Season Sans SemiBold) referenced by the PDF chord chart's title and subtitle are looked up via `fontconfig`. They are not bundled — if absent on your system, LilyPond falls back to its default; the rest of the chart still renders correctly.
 
