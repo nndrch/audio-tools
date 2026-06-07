@@ -25,7 +25,7 @@ The LilyPond/PDF path is separate (`generate_lilypond()`, [`chord_chart_render.p
 - Emits the XML prolog **and** the MusicXML 4.0 `<!DOCTYPE>` (§2/§3 — many tools drop these).
 - `score-partwise version="4.0"`; correct `key/fifths`+`mode`, `time`, and `harmony` child order (`root → kind → bass`).
 - **One `harmony` per chord change** (segment-based, not per-beat), with mid-bar offsets preserved (§4.7).
-- Per-note `<notehead>slash</notehead>` — the portable form the reference prefers over `measure-style/slash` (§4.8).
+- Per-note `<notehead>slash</notehead>` with `<stem>none</stem>` — stemless **time slashes** (evenly-spaced beat markers: play in time, the rhythm is the player's), not rhythmic slashes (stemmed slash-heads that dictate an exact rhythm). Kept in the portable per-note form the reference prefers over `measure-style/slash` (§4.8) — the `none` stem is the only addition. The PDF path matches via `\omit Stem`/`\omit Beam`/`\omit Flag` on the `\improvisationOn` voice (`\omit Beam`/`\omit Flag` matter in 6/8, where the eighth-note slashes would otherwise carry beams).
 - `N` → no `harmony`, just slashes (§4.7).
 - `rehearsal` marks at section starts (§4.10); enharmonic spelling follows the detected key (§7).
 

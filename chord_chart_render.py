@@ -953,13 +953,17 @@ def bar_chords_to_musicxml(
                 cs.duration.quarterLength = seg["beats"] * beat_ql
                 measure.insert(offset, cs)
             offset += seg["beats"] * beat_ql
-        # Fill the bar with one rhythm slash per grid beat. The pitch is
+        # Fill the bar with one time slash per grid beat. The pitch is
         # cosmetic — MuseScore/Sibelius position slash noteheads on the
-        # middle line regardless.
+        # middle line regardless. stemDirection="none" emits an explicit
+        # <stem>none</stem> so these read as time slashes (stemless beat
+        # markers — play in time, rhythm is the player's) rather than
+        # rhythmic slashes (slash noteheads with stems that dictate rhythm).
         for b in range(beats_per_bar):
             slash = note.Note("B4")
             slash.notehead = "slash"
             slash.noteheadFill = True
+            slash.stemDirection = "none"
             slash.duration.quarterLength = beat_ql
             measure.insert(b * beat_ql, slash)
         if idx == n_bars - 1:
@@ -988,9 +992,12 @@ def generate_lilypond(
 ) -> str:
     # time_sig_str overrides the default "{beats_per_bar}/4" — used for 6/8.
     ts = time_sig_str or f"{beats_per_bar}/4"
-    # Per-beat rhythm slash. In 6/8 each grid step is an eighth so the bar
+    # Per-beat time slash. In 6/8 each grid step is an eighth so the bar
     # fills correctly; everything else is quartered. `c'` is squashed to the
     # middle line by Pitch_squash_engraver below, so the pitch is cosmetic.
+    # The duration only sizes/spaces the slash — \omit Stem/Beam/Flag in the
+    # Voice strips the rhythm cues, so these read as time slashes (stemless
+    # beat markers) rather than rhythmic slashes (stemmed, rhythm-dictating).
     beat_duration = "8" if beats_per_bar == 6 else "4"
     bar_slashes = " ".join(f"c'{beat_duration}" for _ in range(beats_per_bar))
 
@@ -1092,6 +1099,9 @@ theChords = \\chordmode {{
         \\consists "Pitch_squash_engraver"
       }} {{
         \\improvisationOn
+        \\omit Stem
+        \\omit Beam
+        \\omit Flag
         {slash_body}
       }}
     }}
