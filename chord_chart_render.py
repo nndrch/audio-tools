@@ -1524,6 +1524,100 @@ def marginalize_to_reduced_vocab(
     return out, labels
 
 
+# Reduced quality → {maj,min} family, for the two-stage decode (M4): the decode
+# wins root+mode on the family view (full family mass), then refines the quality
+# within it. Covers both reduced vocabularies (maj/min maps through unchanged).
+_REDUCED_QUALITY_TO_FAMILY = {
+    "maj": "maj", "maj7": "maj", "7": "maj", "sus": "maj",
+    "min": "min", "min7": "min", "dim": "min",
+}
+
+
+def reduced_vocab_decode(
+    mass: np.ndarray,
+    labels: list[str],
+    beat_times: np.ndarray,
+) -> list[dict]:
+    """Decode per-beat reduced-vocab mass into beat_chords (Phase 1.3 / M4).
+
+    Consumes the summed mass from marginalize_to_reduced_vocab (aggregated to
+    beats via beat_sync_posteriors) and emits the beat_chords list that
+    hybrid_bar_chords / find_bar_phase take: one dict per beat with keys 'beat'
+    (1-based index), 'time', 'chord' ('root:quality' or 'N') and 'confidence'
+    (a [0,1] share) — matching beat_sync_chords().
+
+    Two-stage decode (works for both reduced vocabularies):
+      1. Sum columns into the {maj,min} family view (root × mode) and pick the
+         winner there — so a root whose mass is spread across its family
+         (maj/maj7/7/sus) beats a concentrated rival, the root-swap fix. The
+         N column competes as its own candidate and wins ties (no spurious
+         chord on a no-chord beat).
+      2. Refine the quality within the winning root+family by argmax over that
+         family's columns. For the maj/min vocabulary stage 2 is a no-op (one
+         column per family); for the 7th vocabulary it recovers maj7/min7/7/dim/sus.
+
+    Confidence is the winning family bin's share of the row mass
+    (winning_family_mass / row_sum) — a normalised [0,1] value on the scale the
+    madmom / key-snap / mid-bar gates were tuned for, never the raw summed mass.
+    Does NOT call simplify_chord(): the reduced labels already ARE the
+    simplification (the M5 contract).
+    """
+    mass = np.asarray(mass, dtype=np.float64)
+    n_beats = len(beat_times)
+    if mass.ndim != 2 or mass.shape[0] != n_beats:
+        raise ValueError(
+            f"mass shape {getattr(mass, 'shape', None)} inconsistent with "
+            f"{n_beats} beats")
+    if mass.shape[1] != len(labels):
+        raise ValueError(
+            f"mass has {mass.shape[1]} columns but labels has {len(labels)}")
+
+    # Per column: its (root, family) bin key, or None for the N (no-chord) sink.
+    n_col: int | None = None
+    bins: dict[tuple[int, str], list[int]] = {}
+    for j, lbl in enumerate(labels):
+        if ":" not in lbl:
+            n_col = j                                  # 'N' (or any no-colon sink)
+            continue
+        root_str, quality = lbl.split(":", 1)
+        root   = _ROOT_TO_SEMITONE.get(root_str)
+        family = _REDUCED_QUALITY_TO_FAMILY.get(quality)
+        if root is None or family is None:
+            continue                                   # unexpected label: ignore
+        bins.setdefault((root, family), []).append(j)
+
+    beat_chords: list[dict] = []
+    for i in range(n_beats):
+        row     = mass[i]
+        row_sum = float(row.sum())
+
+        # Stage 1 — strongest {maj,min} family bin.
+        best_cols, best_bin_mass = None, -1.0
+        for cols in bins.values():
+            m = float(row[cols].sum())
+            if m > best_bin_mass:
+                best_cols, best_bin_mass = cols, m
+        n_mass = float(row[n_col]) if n_col is not None else 0.0
+
+        if row_sum <= 1e-12 or best_cols is None or n_mass >= best_bin_mass:
+            chord = "N"
+            conf  = (n_mass / row_sum) if row_sum > 1e-12 else 0.0
+        else:
+            # Stage 2 — strongest quality column within the winning family.
+            win   = best_cols[int(np.argmax(row[best_cols]))]
+            chord = labels[win]
+            conf  = best_bin_mass / row_sum
+
+        beat_chords.append({
+            "beat":       i + 1,
+            "time":       float(beat_times[i]),
+            "chord":      chord,
+            "confidence": round(conf, 3),
+        })
+
+    return beat_chords
+
+
 def _marginalize_crema_to_root_mode(probs: np.ndarray, vocab: list[str]) -> np.ndarray:
     """Collapse (T, 170) crema posteriors to (T, 24): 12 roots × {maj, min}.
 
