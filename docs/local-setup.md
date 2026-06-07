@@ -2,8 +2,6 @@
 
 How to install everything you need to run the audio-tools web UI on your own machine. macOS Apple Silicon is the primary target; Intel macOS and Linux work with minor adjustments. Windows is not currently supported (use WSL2 if you must).
 
-For a non-technical walkthrough with a single-file installer, see [`desktop-mvp-prd.md`](desktop-mvp-prd.md) — that's the future plan, not yet shipped. For now, follow this guide.
-
 ---
 
 ## TL;DR (if you already have Homebrew + Node)
@@ -215,4 +213,3 @@ Demucs downloads model weights (~80 MB per model, ~250 MB for `htdemucs_6s`) on 
 ## Next steps
 
 - See [`web-mvp-prd.md`](web-mvp-prd.md) for the design of the current web app
-- See [`desktop-mvp-prd.md`](desktop-mvp-prd.md) for the planned standalone desktop installer that removes all of this setup for non-technical users

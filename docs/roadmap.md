@@ -1,10 +1,10 @@
 # audio-tools — Project Roadmap
 
-**Project:** audio-tools — end-to-end "session materials" pipeline. Drop in a song, get back a beat-stabilized WAV, a chord chart (PDF + MusicXML), isolated stems, an optional backing track, and an analysis JSON — from a CLI, a local web UI, or (planned) a double-click desktop app.
+**Project:** audio-tools — end-to-end "session materials" pipeline. Drop in a song, get back a beat-stabilized WAV, a chord chart (PDF + MusicXML), isolated stems, an optional backing track, and an analysis JSON — from a CLI or a local web UI.
 
 This is the project-wide roadmap: the stages already shipped, where we are now, and what's next. For the deep design/status of any single workstream, follow the linked companion docs.
 
-**Companion docs:** [`web-mvp-prd.md`](web-mvp-prd.md) · [`desktop-mvp-prd.md`](desktop-mvp-prd.md) · [`chord-detection-implementation-plan.md`](chord-detection-implementation-plan.md) · [`chord-detection-progress.md`](chord-detection-progress.md) · [`advanced-settings.md`](advanced-settings.md) · [`library-alternatives.md`](library-alternatives.md)
+**Companion docs:** [`web-mvp-prd.md`](web-mvp-prd.md) · [`chord-detection-implementation-plan.md`](chord-detection-implementation-plan.md) · [`chord-detection-progress.md`](chord-detection-progress.md) · [`advanced-settings.md`](advanced-settings.md) · [`library-alternatives.md`](library-alternatives.md)
 
 ---
 
@@ -17,8 +17,7 @@ Stage 3  Output quality & analysis      ✅ shipped   (MusicXML, sections, stem 
 Stage 4  Musiversal brand + backing     ✅ shipped   (brand UI, session-type guide tracks)
 Stage 5  Detection-accuracy levers      ✅ shipped   (HPSS, bass-anchor, Viterbi, slash, allin1)
 Stage 6  Chord-accuracy eval harness    🔨 current   (measurement gate + phased detection rework)
-Stage 7  Desktop app (Electron)         ⬜ planned   (bundled Python, double-click installer)
-Stage 8  Cloud worker / remote backend  ⬜ future    (the production target)
+Stage 7  Cloud worker / remote backend  ⬜ future    (the production target)
 ```
 
 ---
@@ -83,11 +82,8 @@ Branch `feat/chord-accuracy-eval-harness`. Stage 5 added levers but no way to *m
 4. **Phase 1.4 — HPSS vs Demucs-harmonic input A/B**, decided by measurement on the dataset.
 5. **Phase 3 — Disagreement-aware dual model** — run madmom on all bars, arbitrate CREMA↔madmom disagreements with combined evidence. Sequenced last (highest regression risk).
 
-### Stage 7 — Desktop app (Electron) — *planned, not started*
-Per [`desktop-mvp-prd.md`](desktop-mvp-prd.md): a double-click `.dmg` that embeds the existing `web/` Next.js app in an Electron shell with bundled Python venvs, native binaries, and ML models — zero install, no terminal, all inference local. Phases: dev-machine prototype → packaged arm64 `.dmg` → universal binary (optional) → Windows (optional) → auto-update (optional). For non-technical testers/demos only; production stays "web + remote backend". *(No `desktop/` directory exists yet — this is design-only.)*
-
-### Stage 8 — Cloud worker / remote backend — *future*
-The eventual production target named in both PRDs: move the heavy Python worker off `localhost` to Modal / Replicate / a dedicated GPU box. The web UI's `web/lib/pipeline.ts` swap point and the desktop shell are both designed to host this version unchanged. Unlocks the deferred web-MVP open questions: sharable result URLs (needs auth + storage), concurrent jobs (real queue), per-stage timing, and pre-upload audio preview.
+### Stage 7 — Cloud worker / remote backend — *future*
+The eventual production target named in the web-MVP PRD: move the heavy Python worker off `localhost` to Modal / Replicate / a dedicated GPU box. The web UI's `web/lib/pipeline.ts` swap point is designed to host this version unchanged. Unlocks the deferred web-MVP open questions: sharable result URLs (needs auth + storage), concurrent jobs (real queue), per-stage timing, and pre-upload audio preview.
 
 ---
 
