@@ -1,13 +1,8 @@
 # Local Development Setup
 
-How to install everything you need to run the audio-tools web UI on your own
-machine. macOS Apple Silicon is the primary target; Intel macOS and Linux work
-with minor adjustments. Windows is not currently supported (use WSL2 if you
-must).
+How to install everything you need to run the audio-tools web UI on your own machine. macOS Apple Silicon is the primary target; Intel macOS and Linux work with minor adjustments. Windows is not currently supported (use WSL2 if you must).
 
-For a non-technical walkthrough with a single-file installer, see
-[`desktop-mvp-prd.md`](desktop-mvp-prd.md) — that's the future plan, not yet
-shipped. For now, follow this guide.
+For a non-technical walkthrough with a single-file installer, see [`desktop-mvp-prd.md`](desktop-mvp-prd.md) — that's the future plan, not yet shipped. For now, follow this guide.
 
 ---
 
@@ -28,8 +23,7 @@ If anything fails, scroll to [Troubleshooting](#troubleshooting).
 
 ## What gets installed and why
 
-The pipeline depends on three completely separate environments because the
-libraries it uses have incompatible Python and NumPy version requirements:
+The pipeline depends on three completely separate environments because the libraries it uses have incompatible Python and NumPy version requirements:
 
 | Tool | Stack | Why isolated |
 |---|---|---|
@@ -44,8 +38,7 @@ Plus three system binaries:
 - **rubberband** — high-quality time-stretching for beat warping
 - **lilypond** — typesets the chord chart PDF
 
-Total disk usage after install: ~3.5 GB (mostly PyTorch + TensorFlow + Demucs
-model weights downloaded on first run).
+Total disk usage after install: ~3.5 GB (mostly PyTorch + TensorFlow + Demucs model weights downloaded on first run).
 
 ---
 
@@ -83,8 +76,7 @@ sudo apt install -y python3.11 python3.11-venv python3-pip \
                     build-essential nodejs npm git
 ```
 
-Verify Node is ≥ v20 — Ubuntu's default repos sometimes ship older versions.
-If not, install from [NodeSource](https://github.com/nodesource/distributions).
+Verify Node is ≥ v20 — Ubuntu's default repos sometimes ship older versions. If not, install from [NodeSource](https://github.com/nodesource/distributions).
 
 ---
 
@@ -99,9 +91,7 @@ cd audio-tools
 bash setup.sh
 ```
 
-`setup.sh` runs six phases and prints `[N / 6]` markers. Expect ~10 min on a
-fast machine, longer on first run because PyTorch and TensorFlow wheels are
-large downloads.
+`setup.sh` runs six phases and prints `[N / 6]` markers. Expect ~10 min on a fast machine, longer on first run because PyTorch and TensorFlow wheels are large downloads.
 
 ```bash
 # 3. Install web app dependencies
@@ -114,28 +104,18 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>. Drop a 30-second wav to test the full pipeline
-without waiting long.
+Open <http://localhost:3000>. Drop a 30-second wav to test the full pipeline without waiting long.
 
 ---
 
 ## What `setup.sh` does
 
-1. **System dependencies** — `brew install python@3.11 rubberband ffmpeg` on
-   macOS, equivalent `apt` packages on Linux.
-2. **Beat-stabilizer deps** — `pip install -r requirements.txt` into the system
-   Python. Includes `numpy`, `librosa`, `soundfile`, `pyrubberband`, `pydub`.
-3. **Crema venv** — creates `venv_crema/` with Python 3.11, installs
-   `setuptools<70` first (crema's loader needs `pkg_resources`), then crema
-   itself with TensorFlow 2.x.
-4. **Madmom venv** — creates `venv_madmom/` with Python 3.11, installs
-   `numpy>=1.20,<2.0` + `Cython` *first*, then madmom with
-   `--no-build-isolation` so its setup.py can find them. On Apple Silicon
-   `ARCHFLAGS="-arch arm64"` is set so the Cython extensions compile native.
-5. **Demucs venv** — creates `venv_demucs/` with Python 3.11, installs
-   PyTorch CPU + Demucs. Models download on first inference run, not here.
-6. **LilyPond** — verifies it's installed; auto-installs via Homebrew on macOS
-   if missing.
+1. **System dependencies** — `brew install python@3.11 rubberband ffmpeg` on macOS, equivalent `apt` packages on Linux.
+2. **Beat-stabilizer deps** — `pip install -r requirements.txt` into the system Python. Includes `numpy`, `librosa`, `soundfile`, `pyrubberband`, `pydub`.
+3. **Crema venv** — creates `venv_crema/` with Python 3.11, installs `setuptools<70` first (crema's loader needs `pkg_resources`), then crema itself with TensorFlow 2.x.
+4. **Madmom venv** — creates `venv_madmom/` with Python 3.11, installs `numpy>=1.20,<2.0` + `Cython` *first*, then madmom with `--no-build-isolation` so its setup.py can find them. On Apple Silicon `ARCHFLAGS="-arch arm64"` is set so the Cython extensions compile native.
+5. **Demucs venv** — creates `venv_demucs/` with Python 3.11, installs PyTorch CPU + Demucs. Models download on first inference run, not here.
+6. **LilyPond** — verifies it's installed; auto-installs via Homebrew on macOS if missing.
 
 ---
 
@@ -163,16 +143,13 @@ bash setup.sh          # only re-runs what's missing; safe to re-run
 cd web && npm install  # pulls any new web deps
 ```
 
-`setup.sh` is idempotent — it won't reinstall things that are already in
-place. If you want a clean rebuild of a venv, delete it first
-(`rm -rf venv_madmom`) and re-run.
+`setup.sh` is idempotent — it won't reinstall things that are already in place. If you want a clean rebuild of a venv, delete it first (`rm -rf venv_madmom`) and re-run.
 
 ---
 
 ## Uninstalling
 
-The footprint is contained — there is no global install. Remove the repo and
-the cached model weights:
+The footprint is contained — there is no global install. Remove the repo and the cached model weights:
 
 ```bash
 cd ..
@@ -181,8 +158,7 @@ rm -rf "$TMPDIR/audio-tools-jobs"          # job artifacts (macOS / Linux)
 rm -rf ~/.cache/torch/hub/checkpoints      # Demucs model weights
 ```
 
-Homebrew packages (ffmpeg, rubberband, lilypond, python@3.11) are general-
-purpose; remove only if you don't want them anymore: `brew uninstall <name>`.
+Homebrew packages (ffmpeg, rubberband, lilypond, python@3.11) are general- purpose; remove only if you don't want them anymore: `brew uninstall <name>`.
 
 ---
 
@@ -190,11 +166,7 @@ purpose; remove only if you don't want them anymore: `brew uninstall <name>`.
 
 ### `ModuleNotFoundError: No module named 'numpy'` when running the pipeline
 
-The web server is spawning the wrong Python. macOS has both Apple's
-`/usr/bin/python3` (where `setup.sh` puts the beat-stabilizer deps) and
-Homebrew's `python3` (which doesn't have them).
-[`web/lib/pipeline.ts`](../web/lib/pipeline.ts) auto-detects this, but if your
-setup is unusual, override:
+The web server is spawning the wrong Python. macOS has both Apple's `/usr/bin/python3` (where `setup.sh` puts the beat-stabilizer deps) and Homebrew's `python3` (which doesn't have them). [`web/lib/pipeline.ts`](../web/lib/pipeline.ts) auto-detects this, but if your setup is unusual, override:
 
 ```bash
 AUDIO_TOOLS_PYTHON=/usr/bin/python3 npm run dev
@@ -202,36 +174,27 @@ AUDIO_TOOLS_PYTHON=/usr/bin/python3 npm run dev
 
 ### `madmom` install fails with `ModuleNotFoundError: No module named 'Cython'`
 
-The fix is in current `setup.sh` (uses `--no-build-isolation`). If you're
-seeing this from an older clone, `git pull` and re-run `setup.sh`.
+The fix is in current `setup.sh` (uses `--no-build-isolation`). If you're seeing this from an older clone, `git pull` and re-run `setup.sh`.
 
 ### `rubberband: command not found` during pipeline
 
-Install it: `brew install rubberband` (macOS) or
-`sudo apt install rubberband-cli` (Linux).
+Install it: `brew install rubberband` (macOS) or `sudo apt install rubberband-cli` (Linux).
 
 ### `lilypond` install hangs or fails on macOS
 
-`brew install lilypond` is a large download (~150 MB) and includes its own
-Python. Let it finish; first run can take several minutes.
+`brew install lilypond` is a large download (~150 MB) and includes its own Python. Let it finish; first run can take several minutes.
 
 ### Web UI shows "Waiting in queue…" and never starts
 
-A previous job is stuck. The dev server has auto-recovery on restart — stop
-it (Ctrl+C in the `npm run dev` terminal) and restart. Stranded jobs in
-`$TMPDIR/audio-tools-jobs/` will be marked as error and the queue will clear.
+A previous job is stuck. The dev server has auto-recovery on restart — stop it (Ctrl+C in the `npm run dev` terminal) and restart. Stranded jobs in `$TMPDIR/audio-tools-jobs/` will be marked as error and the queue will clear.
 
 ### Demucs first run is slow
 
-Demucs downloads model weights (~80 MB per model, ~250 MB for `htdemucs_6s`)
-on first inference. This happens once per machine, then cached in
-`~/.cache/torch/hub/checkpoints/`. Subsequent runs are fast.
+Demucs downloads model weights (~80 MB per model, ~250 MB for `htdemucs_6s`) on first inference. This happens once per machine, then cached in `~/.cache/torch/hub/checkpoints/`. Subsequent runs are fast.
 
 ### Apple Silicon: `madmom` compiled wrong arch
 
-`setup.sh` sets `ARCHFLAGS="-arch arm64"` on Apple Silicon. If you migrated
-from an Intel Mac via Migration Assistant, delete `venv_madmom/` and re-run
-`setup.sh`.
+`setup.sh` sets `ARCHFLAGS="-arch arm64"` on Apple Silicon. If you migrated from an Intel Mac via Migration Assistant, delete `venv_madmom/` and re-run `setup.sh`.
 
 ---
 
@@ -252,5 +215,4 @@ from an Intel Mac via Migration Assistant, delete `venv_madmom/` and re-run
 ## Next steps
 
 - See [`web-mvp-prd.md`](web-mvp-prd.md) for the design of the current web app
-- See [`desktop-mvp-prd.md`](desktop-mvp-prd.md) for the planned standalone
-  desktop installer that removes all of this setup for non-technical users
+- See [`desktop-mvp-prd.md`](desktop-mvp-prd.md) for the planned standalone desktop installer that removes all of this setup for non-technical users
