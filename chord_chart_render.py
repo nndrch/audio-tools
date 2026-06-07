@@ -1403,6 +1403,127 @@ def _apply_slash_chords(
 # bar, we recover the chord quality by taking the highest-posterior chord
 # in the original 170 distribution whose root/mode matches Viterbi's pick.
 
+# Reduced decoding vocabularies (Phase 1.3). marginalize_to_reduced_vocab() sums
+# crema's 170-class posterior mass into one column per (root, reduced-quality),
+# so a decode can argmax over the SUMMED family mass instead of crema's argmax
+# over fine classes (which scatters a chord's mass across maj/maj7/7/… and lets a
+# concentrated rival win the root).
+REDUCED_MAJMIN = ("maj", "min")
+REDUCED_7TH    = ("maj", "min", "maj7", "min7", "7", "dim", "sus")
+
+# crema fine quality → reduced quality for the 7th vocabulary (the maj/min
+# vocabulary reuses _QUALITY_TO_SIMPLE). hdim7 routes to dim (its triad is
+# diminished); aug/maj6 → maj; min6/minmaj7 → min. Unmapped → maj.
+_QUALITY_TO_REDUCED7 = {
+    "maj": "maj",   "maj6": "maj",  "aug": "maj",
+    "min": "min",   "min6": "min",  "minmaj7": "min",
+    "maj7": "maj7",
+    "min7": "min7",
+    "7": "7",
+    "dim": "dim",   "dim7": "dim",  "hdim7": "dim",
+    "sus2": "sus",  "sus4": "sus",
+}
+
+
+def marginalize_to_reduced_vocab(
+    probs: np.ndarray,
+    vocab: list[str],
+    add_7th: bool = False,
+    keep_n: bool = True,
+) -> tuple[np.ndarray, list[str]]:
+    """Sum crema posteriors into a reduced (root, quality) vocabulary (Phase 1.3).
+
+    Generalises _marginalize_crema_to_root_mode: instead of collapsing to 24
+    (root × {maj,min}) and dropping N, it produces summed probability mass over a
+    chosen reduced vocabulary and (by default) keeps an N column.
+
+    This is the lever for the root-swap fix: if crema spreads a chord's mass
+    across its family (C:maj 0.30 / C:maj7 0.30 / C:7 0.25 = 0.85) but argmaxes to
+    a concentrated rival (A:min 0.35), summing the family beats the rival and the
+    decode (M4) picks C. With add_7th=False the whole family collapses to one
+    column per root (the strongest root-swap fix); with add_7th=True the 7th
+    qualities occupy separate columns (finer labels, but the family no longer
+    merges for the *root* decision — a tradeoff the eval harness arbitrates).
+
+    Apply this PER FRAME, before beat aggregation (beat_sync_posteriors): summing
+    columns is linear, so it commutes with the default `mean` aggregator, and any
+    transient-resistant aggregator then operates on whole chord families rather
+    than competing fine classes.
+
+    Parameters
+    ----------
+    probs   : (T, n_classes) crema posteriors (per-frame or per-beat).
+    vocab   : list of n_classes crema labels (column index → label, e.g. 'A#:7').
+    add_7th : False → {maj, min}; True → {maj,min,maj7,min7,7,dim,sus}. Output
+              width is 12*len(qualities) (+1 for N if keep_n): 25 / 85 by default,
+              24 / 84 with keep_n=False.
+    keep_n  : append an 'N' (no-chord) column. It collects crema's N mass AND its
+              'X' (unknown-chord) mass — both render as no-chord (the file-wide
+              X→N convention). Unknown roots/qualities are dropped (not misrouted),
+              so with keep_n=False rows sum to ≤ the input mass.
+
+    Returns
+    -------
+    (out, labels):
+      out    : (T, K) summed mass, K = 12*len(qualities) (+1 if keep_n). NOT
+               renormalised — it is faithful summed mass (the quantity M4
+               argmaxes); rows sum to ~the retained input mass.
+      labels : list[str] length K mapping column index → reduced label
+               ('C:maj', 'A:min', …, 'N'). Roots are spelled with sharps;
+               enharmonics score identically in mir_eval and are respelled to the
+               key's accidental policy by the display/MusicXML helpers downstream.
+
+    Downstream contract (preconditions for M4/M5):
+      - Confidence: this output is summed mass (can exceed 1), NOT a [0,1]
+        posterior. The decode (M4) must derive any beat 'confidence' for
+        hybrid_bar_chords / madmom / key-snap as a normalised share
+        (winning_column / row_sum) — the scale those 0.70–0.80 gates were tuned
+        for — never the raw mass.
+      - add_7th decode: prefer two-stage — win root+mode on the {maj,min} view
+        (full family mass, so C beats Am), then refine the quality within the
+        winning family — over a flat argmax across 84 columns (which splits the
+        family and can regress the root). The eval harness arbitrates.
+      - M5 must NOT re-run simplify_chord() on these labels (it would collapse
+        dim→min and sus→maj); the reduced decode already IS the simplification.
+    """
+    probs = np.asarray(probs)
+    if probs.ndim != 2 or probs.shape[1] != len(vocab):
+        raise ValueError(
+            f"probs shape {getattr(probs, 'shape', None)} inconsistent with "
+            f"len(vocab)={len(vocab)}")
+
+    qualities = REDUCED_7TH if add_7th else REDUCED_MAJMIN
+    qmap      = _QUALITY_TO_REDUCED7 if add_7th else _QUALITY_TO_SIMPLE
+    Q       = len(qualities)
+    q_index = {q: k for k, q in enumerate(qualities)}
+
+    T = probs.shape[0]
+    K = 12 * Q + (1 if keep_n else 0)
+    out = np.zeros((T, K), dtype=np.float64)
+    n_col = K - 1 if keep_n else None   # N/X sink column index (None guards misuse)
+
+    for j, lbl in enumerate(vocab):
+        if ":" not in lbl:
+            # crema has TWO no-colon classes: 'N' (no chord) and 'X' (unknown
+            # chord). Both render as no-chord on a chart, so route both to the N
+            # column — the file-wide X→N convention (cf. the --lab-out writer).
+            # Dropped entirely when keep_n is False.
+            if keep_n and lbl in ("N", "X"):
+                out[:, n_col] += probs[:, j]
+            continue
+        root_str, quality = lbl.split(":", 1)
+        root = _ROOT_TO_SEMITONE.get(root_str)
+        rq   = qmap.get(quality)
+        if root is None or rq is None:
+            continue  # unknown root/quality: drop its mass rather than misroute it
+        out[:, root * Q + q_index[rq]] += probs[:, j]
+
+    labels = [f"{_SEMITONE_TO_ROOT_SHARP[r]}:{q}" for r in range(12) for q in qualities]
+    if keep_n:
+        labels.append("N")
+    return out, labels
+
+
 def _marginalize_crema_to_root_mode(probs: np.ndarray, vocab: list[str]) -> np.ndarray:
     """Collapse (T, 170) crema posteriors to (T, 24): 12 roots × {maj, min}.
 

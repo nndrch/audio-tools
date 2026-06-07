@@ -98,7 +98,8 @@ def detect_chords_crema(
     model = crema.models.chord.ChordModel()
     output = model.outputs(y=y, sr=sr)
 
-    # crema's actual output key is 'chord_tag' (170 classes: 14 roots × 12 qualities + N)
+    # crema's actual output key is 'chord_tag' (170 classes: 12 roots × 14 qualities
+    # = 168, plus N (no chord) and X (unknown chord))
     chord_probs = output["chord_tag"]          # (n_frames, 170)
     chord_idx   = np.argmax(chord_probs, axis=1)
     confidence  = chord_probs[np.arange(len(chord_idx)), chord_idx]
@@ -184,9 +185,156 @@ def beat_sync_chords(
     return beat_results
 
 
+_BEAT_SYNC_AGG = ("mean", "trimmed_mean", "median")
+
+
+def beat_sync_posteriors(
+    chord_probs: np.ndarray,
+    times: np.ndarray,
+    beat_times: np.ndarray,
+    agg: str = "mean",
+    trim_frac: float = 0.2,
+) -> np.ndarray:
+    """Aggregate crema's per-frame posteriors into one distribution per beat
+    (Phase 1.2).
+
+    Where beat_sync_chords() takes a confidence-weighted vote over per-frame
+    *argmax labels*, this keeps the full distribution and aggregates *posteriors*
+    over each beat window, so decoding can run on the aggregated mass (Phase 1.3)
+    instead of argmax-then-collapse.
+
+    `agg` selects the per-window aggregator. All return a renormalised
+    distribution (uniform if the window is degenerate / all-zero):
+
+      "mean" (default)
+          Average posterior over the window. Mass-preserving, and its argmax
+          equals the summed-mass argmax — i.e. it IS the "decode on summed
+          posterior mass" operation Phase 1.3 specifies. Being linear, it
+          commutes with the reduced-vocab marginalisation, so aggregate/marginalise
+          order does not matter. Safe default.
+
+      "trimmed_mean"
+          Drop the frames furthest (L1) from the window's component-wise median,
+          then mean the rest (no trimming for <4 frames; `trim_frac` sets the drop
+          fraction). Transient-resistant like a median but, unlike a per-class
+          median, still mass-preserving — it removes outlier FRAMES, not outlier
+          classes.
+
+      "median"
+          Component-wise median. Resists transients but is NOT mass-preserving: a
+          per-class median can elect a steady minority class over a stronger class
+          whose mass rotates across frames, contradicting the summed-mass decode.
+          Kept for A/B evaluation only — not a safe default. If used, apply it
+          only AFTER reduced-vocab marginalisation (so each column is a whole
+          chord family, not a competing fine class).
+
+    Parameters
+    ----------
+    chord_probs : (n_frames, n_classes) crema posteriors (from detect_chords_crema).
+    times       : (n_frames,) frame-centre times in seconds (ascending).
+    beat_times  : (n_beats,) beat grid in seconds (librosa or analytic_beat_grid),
+                  ascending.
+    agg         : one of {"mean", "trimmed_mean", "median"}.
+    trim_frac   : fraction of frames to drop in "trimmed_mean" (per window).
+
+    Returns
+    -------
+    (n_beats, n_classes) float64 array; each row is a probability distribution
+    over the crema classes, renormalised to sum to 1. Window i spans
+    [beat_i, beat_{i+1}); the final (open-ended) window extends one median beat
+    interval past the last beat. Windowing matches beat_sync_chords() for >1
+    beat; the single-beat case is handled more robustly here (a full frame span,
+    where beat_sync_chords() would compute NaN).
+    """
+    if agg not in _BEAT_SYNC_AGG:
+        raise ValueError(f"agg must be one of {_BEAT_SYNC_AGG}, got {agg!r}")
+
+    n_beats = len(beat_times)
+    if chord_probs.ndim != 2:
+        return np.zeros((n_beats, 0), dtype=np.float64)
+    n_frames, n_classes = chord_probs.shape
+    if n_frames != len(times):
+        raise ValueError(
+            f"chord_probs has {n_frames} frames but times has {len(times)}")
+
+    out = np.zeros((n_beats, n_classes), dtype=np.float64)
+    if n_beats == 0 or n_classes == 0 or n_frames == 0:
+        return out
+
+    # Span of the final (open-ended) window — median beat interval, with a safe
+    # fallback when there is only a single beat (beat_sync_chords would NaN here).
+    if n_beats > 1:
+        last_span = float(np.median(np.diff(beat_times)))
+    else:
+        last_span = float(times[-1] - times[0]) if n_frames > 1 else 0.5
+
+    uniform = np.full(n_classes, 1.0 / n_classes)
+
+    for i in range(n_beats):
+        start = float(beat_times[i])
+        end   = float(beat_times[i + 1]) if i < n_beats - 1 else start + last_span
+        idx   = np.where((times >= start) & (times < end))[0]
+        if idx.size == 0:
+            # No frames in the window: fall back to the single nearest frame
+            # (anchored to the window start, matching beat_sync_chords).
+            idx = np.array([int(np.argmin(np.abs(times - start)))])
+
+        frames = chord_probs[idx].astype(np.float64)   # cast once, in float64
+
+        if agg == "median":
+            row = np.median(frames, axis=0)
+        elif agg == "trimmed_mean" and frames.shape[0] >= 4:
+            # Drop whole outlier FRAMES (those farthest from the robust centre),
+            # then mean the survivors — transient-resistant yet mass-preserving.
+            centre = np.median(frames, axis=0)
+            dist   = np.abs(frames - centre).sum(axis=1)
+            n_drop = max(1, int(round(frames.shape[0] * trim_frac)))
+            keep   = np.argsort(dist)[: frames.shape[0] - n_drop]
+            row    = frames[keep].mean(axis=0)
+        else:                                           # "mean" (and trimmed <4)
+            row = frames.mean(axis=0)
+
+        s = row.sum()
+        out[i] = row / s if s > 1e-12 else uniform      # never emit a non-distribution
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Detect beats (lifted from beat_stabilizer logic)
 # ---------------------------------------------------------------------------
+
+def analytic_beat_grid(bpm: float, t_end: float, phase: float = 0.0) -> np.ndarray:
+    """Deterministic beat grid from a known tempo (Phase 1.1).
+
+    When the input has been beat-stabilized to a fixed tempo (or --bpm / the
+    .bpm sidecar is known), the beats are exactly periodic — so derive them
+    analytically from the tempo instead of re-running a beat tracker. This is
+    exact and deterministic, and removes a noise source that median posterior
+    aggregation (Phase 1.2) would otherwise inherit.
+
+    Parameters
+    ----------
+    bpm   : tempo in beats per minute (must be > 0).
+    t_end : cover beats up to and including this time (seconds).
+    phase : time of the first beat (seconds). The grid is phase + k*(60/bpm).
+            For stabilized audio this is the first downbeat (often ~0); pass the
+            first tracker beat to anchor the analytic grid to the real downbeat.
+
+    Returns
+    -------
+    (n_beats,) ascending float array of beat times in seconds. Empty if the
+    window is degenerate (t_end < phase).
+    """
+    if bpm <= 0:
+        raise ValueError(f"bpm must be > 0, got {bpm}")
+    if t_end < phase:
+        return np.array([], dtype=float)
+    period = 60.0 / float(bpm)
+    # +1e-9 so a t_end landing exactly on a beat is included despite float error.
+    n = int(np.floor((t_end - phase) / period + 1e-9)) + 1
+    return phase + np.arange(n, dtype=float) * period
+
 
 def detect_beats(
     y: np.ndarray,

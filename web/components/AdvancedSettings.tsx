@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Lock } from "lucide-react";
+import { STRUCTURE_LOCKED, LOCKED_STRUCTURE_SUMMARY } from "@/lib/validation";
 
 // ---------------------------------------------------------------------------
 // Advanced settings — behavioural knobs most users never need to touch.
@@ -267,6 +268,32 @@ type Props = {
 
 export function AdvancedSettings({ value, onChange, disabled }: Props) {
   const [open, setOpen] = useState(false);
+
+  // While the chord-accuracy structure is locked for the A/B test, the advanced
+  // settings are fixed server-side (see LOCKED_STRUCTURE in validation.ts), so we
+  // replace the toggle with a read-only notice rather than let users diverge from
+  // the defined structure. (Hook above is called unconditionally first.)
+  if (STRUCTURE_LOCKED) {
+    return (
+      <div className="bg-ivory border border-warm-100 px-5 py-3">
+        <div className="flex items-center gap-1.5">
+          <Lock size={12} strokeWidth={2} className="text-[#888888]" />
+          <span className="font-inter text-[10px] font-medium uppercase tracking-[0.12em] text-[#888888]">
+            Chord settings locked for this build
+          </span>
+        </div>
+        <p className="mt-1.5 font-inter text-xs text-[#888888]">
+          A fixed accuracy structure is applied to every render so results stay
+          comparable:
+        </p>
+        <ul className="mt-1 list-disc pl-4 font-inter text-xs text-[#888888] space-y-0.5">
+          {LOCKED_STRUCTURE_SUMMARY.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
 
   function patch<K extends keyof AdvancedState>(key: K, v: AdvancedState[K]) {
     onChange({ ...value, [key]: v });

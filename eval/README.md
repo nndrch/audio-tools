@@ -1,9 +1,6 @@
 # Chord-detection evaluation harness
 
-Phase 0 of [`docs/chord-detection-implementation-plan.md`](../docs/chord-detection-implementation-plan.md):
-the measurement gate. **No accuracy change in Phases 1–3 ships without moving
-the numbers here.** Improvements are quantified with MIREX-style weighted chord
-recall, not eyeballed.
+Phase 0 of [`docs/chord-detection-implementation-plan.md`](../docs/chord-detection-implementation-plan.md): the measurement gate. **No accuracy change in Phases 1–3 ships without moving the numbers here.** Improvements are quantified with MIREX-style weighted chord recall, not eyeballed.
 
 ## Pieces
 
@@ -14,8 +11,7 @@ recall, not eyeballed.
 | `dataset/` | The hand-labeled test set (you populate this — see below). |
 | `results/` | Auto-written run outputs + scores. Git-ignored. |
 
-Both scripts run in **`venv_crema`** (it has `chord_chart_render.py`'s deps and
-`mir_eval`):
+Both scripts run in **`venv_crema`** (it has `chord_chart_render.py`'s deps and `mir_eval`):
 
 ```bash
 bash setup.sh                       # installs mir_eval into venv_crema (requirements_crema.txt)
@@ -34,8 +30,7 @@ eval/dataset/
   ...
 ```
 
-- Audio: `.wav` `.mp3` `.m4a` `.flac` `.aiff` `.ogg`. **Audio is git-ignored**
-  (the repo's `*.wav` etc. rules) — reference your own files; don't commit them.
+- Audio: `.wav` `.mp3` `.m4a` `.flac` `.aiff` `.ogg`. **Audio is git-ignored** (the repo's `*.wav` etc. rules) — reference your own files; don't commit them.
 - `.lab`: **tracked in git** — this is the labeled set worth preserving.
 
 ### `.lab` format (Harte)
@@ -50,14 +45,9 @@ Tab- or space-separated `start  end  label`, seconds, one segment per line:
 8.020  10.025   N
 ```
 
-Labels are Harte shorthand — `root:quality`, e.g. `C:maj`, `A:min`, `G:7`,
-`F:maj7`, `B:hdim7`, or `N` for no chord. This is exactly what
-`chord_chart_render.py --lab-out` emits, so detected and reference files are
-directly comparable. Target material for the set: **pop / rock /
-singer-songwriter** (~15 songs); complex jazz/prog harmony is out of scope.
+Labels are Harte shorthand — `root:quality`, e.g. `C:maj`, `A:min`, `G:7`, `F:maj7`, `B:hdim7`, or `N` for no chord. This is exactly what `chord_chart_render.py --lab-out` emits, so detected and reference files are directly comparable. Target material for the set: **pop / rock / singer-songwriter** (~15 songs); complex jazz/prog harmony is out of scope.
 
-> Tooling tip: annotations exported from Sonic Visualiser / Chordino, or any
-> existing Harte-format set, drop straight in.
+> Tooling tip: annotations exported from Sonic Visualiser / Chordino, or any existing Harte-format set, drop straight in.
 
 ## Metrics
 
@@ -104,10 +94,7 @@ singer-songwriter** (~15 songs); complex jazz/prog harmony is out of scope.
 | `keysnap` | `--key-snap` | no |
 | `accuracy` | `--key-snap --viterbi-smoothing --section-consistency --bass-anchor --slash-chords` | bass stem + sections |
 
-`--prepare-aux` generates the bass stem (`venv_demucs`) and section JSON
-(`venv_allin1`) per song and caches them under `results/work/aux/`. Without it,
-stem/section-dependent flags are dropped (with a warning) so the run still
-completes.
+`--prepare-aux` generates the bass stem (`venv_demucs`) and section JSON (`venv_allin1`) per song and caches them under `results/work/aux/`. Without it, stem/section-dependent flags are dropped (with a warning) so the run still completes.
 
 ## Workflow for an accuracy change
 

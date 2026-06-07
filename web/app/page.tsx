@@ -11,6 +11,7 @@ import {
   toSettingsPayload,
   type AdvancedState,
 } from "@/components/AdvancedSettings";
+import { STRUCTURE_LOCKED } from "@/lib/validation";
 
 const STORAGE_KEY = "audio-tools.advanced.v1";
 
@@ -38,6 +39,10 @@ export default function UploadPage() {
   const lastAnalyzedFileRef = useRef<File | null>(null);
 
   useEffect(() => {
+    // Locked test-arm build: ignore saved advanced settings so the non-structural
+    // knobs sit at their defaults (the structural settings are forced server-side
+    // in pipeline.ts). Restores normal hydration when STRUCTURE_LOCKED is false.
+    if (STRUCTURE_LOCKED) return;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;

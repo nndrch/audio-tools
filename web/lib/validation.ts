@@ -120,6 +120,47 @@ export const SettingsSchema = z.object({
 
 export type Settings = z.infer<typeof SettingsSchema>;
 
+// ── Locked chord-accuracy structure (branch: feat/chord-accuracy-eval-harness) ──
+// While this branch is under A/B test against the current build, the chord-detection
+// accuracy config is FIXED so every render follows the same defined structure and
+// results are comparable. This single flag is read in three places:
+//   • web/lib/pipeline.ts        — forces these flags onto the CLI (server-side,
+//                                   immune to stale client state)
+//   • web/app/page.tsx           — skips localStorage hydration so the other knobs
+//                                   sit at their defaults
+//   • web/components/AdvancedSettings.tsx — shows a locked notice instead of the
+//                                   advanced-settings toggle
+// Flip to false (or delete this block + its three call sites) to restore
+// user-controlled settings. Typed `boolean` (not the literal `true`) so the
+// dependent branches don't read as unreachable to the type-checker.
+export const STRUCTURE_LOCKED: boolean = true;
+
+// The fixed structure applied when STRUCTURE_LOCKED (decision 2026-06-06): detect
+// sections, HPSS + drum removal, bass-anchored roots, same-named-section
+// consistency, key-snap, and key-aware Viterbi smoothing. Stems + sections are
+// forced on (dependencies of HPSS-drum-removal / bass-anchor / section-consistency);
+// slash chords are explicitly off.
+export const LOCKED_STRUCTURE: Partial<Settings> = {
+  skipStems: false,
+  skipSections: false,
+  hpssMode: "hpss-no-drums",
+  bassAnchor: true,
+  sectionConsistency: true,
+  keySnap: true,
+  viterbiSmoothing: true,
+  slashChords: false,
+};
+
+// Human-readable summary for the locked-structure notice shown in the UI.
+export const LOCKED_STRUCTURE_SUMMARY = [
+  "Detect song sections",
+  "Chord input cleaning — HPSS + drum removal",
+  "Anchor chord roots to the bass stem",
+  "Same-named sections share progressions",
+  "Snap out-of-key chords to diatonic",
+  "Key-aware Viterbi smoothing",
+] as const;
+
 export function extensionOf(filename: string): string {
   const i = filename.lastIndexOf(".");
   return i < 0 ? "" : filename.slice(i).toLowerCase();

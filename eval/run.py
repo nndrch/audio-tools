@@ -180,7 +180,14 @@ def run_profile_on_song(audio: str, ref_lab: str, flags: list[str], work_dir: st
         print(f"  [warn] {stem}: chord step exited {proc.returncode} (likely render); scoring .lab anyway",
               file=sys.stderr)
 
-    return score_pair(ref_lab, est_lab)
+    # A malformed label in the reference (e.g. a musician typo mir_eval rejects)
+    # must not crash the whole run — report it and skip just this song.
+    try:
+        return score_pair(ref_lab, est_lab)
+    except Exception as e:
+        print(f"  [fail] {stem}: scoring error ({e}); skipping. "
+              f"Check {ref_lab} for an invalid chord label.", file=sys.stderr)
+        return None
 
 
 def aggregate(rows: list[dict]) -> dict:

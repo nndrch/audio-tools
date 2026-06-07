@@ -17,7 +17,7 @@ import {
 } from "./jobs";
 import { zipDirectory } from "./zip";
 import { REPO_ROOT } from "./jobs";
-import type { Settings } from "./validation";
+import { STRUCTURE_LOCKED, LOCKED_STRUCTURE, type Settings } from "./validation";
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -92,7 +92,16 @@ function resolvePythonExecutable(): string {
   return "python3";
 }
 
-function settingsToArgs(s: Settings, outDir: string, inputPath: string): string[] {
+// When the chord-accuracy structure is locked for the A/B test (see
+// STRUCTURE_LOCKED in validation.ts), force the fixed settings onto whatever the
+// client sent. Done here, server-side, so the defined structure holds regardless
+// of stale localStorage or a hand-crafted request.
+function applyLockedStructure(s: Settings): Settings {
+  return STRUCTURE_LOCKED ? { ...s, ...LOCKED_STRUCTURE } : s;
+}
+
+function settingsToArgs(sIn: Settings, outDir: string, inputPath: string): string[] {
+  const s = applyLockedStructure(sIn);
   const args: string[] = [
     "pipeline.py",
     "-i", inputPath,
