@@ -53,6 +53,8 @@ from chord_sheet import (
     detect_beats,
     detect_time_signature,
     beat_sync_chords,
+    beat_sync_posteriors,
+    analytic_beat_grid,
     CONFIDENCE_WARN,
 )
 
@@ -1197,6 +1199,17 @@ Examples:
     lib.add_argument("--no-bar-phase",     action="store_false", dest="bar_phase",
                      help="Disable chord-grid phase alignment to bar downbeats")
     lib.set_defaults(bar_phase=True)
+    # ── Phase 1 detection core (M1–M4), default-off ──
+    lib.add_argument("--analytic-beats", action="store_true", dest="analytic_beats",
+                     help="Use an exact analytic beat grid at the known tempo "
+                          "(--bpm / .bpm sidecar), anchored to the first tracker beat, "
+                          "instead of the librosa grid. Falls back to the tracker when "
+                          "no tempo is known. Deterministic; removes beat jitter (Phase 1.1).")
+    lib.add_argument("--reduced-vocab-decode", action="store_true", dest="reduced_vocab_decode",
+                     help="Decode chords on summed reduced-vocabulary posterior mass "
+                          "(marginalise → beat-sync → two-stage decode) instead of "
+                          "argmax-then-simplify — the root-swap fix. Honours --add-7th "
+                          "(Phase 1.2/1.3).")
     lib.add_argument("--ts-window-factor",   type=float, default=0.15, dest="ts_window_factor",
                      help="Time-signature autocorrelation window factor (default: 0.15)")
     lib.add_argument("--librosa-start-bpm",  type=float, default=120.0, dest="librosa_start_bpm",
@@ -2210,6 +2223,17 @@ def main() -> None:
               f"{len(beat_times)} beats  |  {bpm_after:.1f} BPM")
         bpm = args.bpm or bpm_after   # honour the override in the subtitle
 
+    # Analytic beat grid (--analytic-beats, Phase 1.1): when the tempo is known
+    # (--bpm or .bpm sidecar), replace the tracker grid with an exact periodic
+    # grid at that tempo, anchored to the first tracker beat — deterministic and
+    # jitter-free, the noise source the posterior aggregation (M2) would inherit.
+    # Falls back to the tracker grid above when no tempo is known.
+    if args.analytic_beats and (args.bpm or sidecar_bpm) and len(beat_times) > 0:
+        _phase = float(beat_times[0])
+        beat_times = analytic_beat_grid(bpm, float(len(y)) / sr, phase=_phase)
+        print(f"  Analytic beat grid: {len(beat_times)} beats @ {bpm:.1f} BPM "
+              f"(exact, anchored to first beat at {_phase:.3f}s)")
+
     # 4. Detect time signature
     if args.time_sig:
         beats_per_bar = args.time_sig
@@ -2231,10 +2255,22 @@ def main() -> None:
     # 5. Align, simplify, collapse to bars
     _emit("align", 0.65, "aligning chords to bars")
     print(f"\n[5/5] Aligning chords to beat grid …")
-    beat_chords = beat_sync_chords(times, confidence, labels, beat_times, sr, hop)
+    if args.reduced_vocab_decode:
+        # Phase 1.2/1.3 (M2+M3+M4): decode on summed posterior mass over a reduced
+        # vocabulary instead of argmax-then-simplify. Marginalise per frame (linear,
+        # so it commutes with the mean aggregator), aggregate to beats, then
+        # two-stage decode. No simplify_chord() — the reduced labels already ARE
+        # the simplification.
+        _red_mass, _red_labels = marginalize_to_reduced_vocab(
+            crema_probs, crema_vocab, add_7th=args.add_7th)
+        _beat_mass = beat_sync_posteriors(_red_mass, times, beat_times, agg="mean")
+        beat_chords = reduced_vocab_decode(_beat_mass, _red_labels, beat_times)
+        print(f"  Reduced-vocab decode: {len(beat_chords)} beats (add_7th={args.add_7th})")
+    else:
+        beat_chords = beat_sync_chords(times, confidence, labels, beat_times, sr, hop)
 
-    beat_chords = [{**b, "chord": simplify_chord(b["chord"], add_7th=args.add_7th)}
-                   for b in beat_chords]
+        beat_chords = [{**b, "chord": simplify_chord(b["chord"], add_7th=args.add_7th)}
+                       for b in beat_chords]
 
     # Align the beat grid to real bar downbeats (skip with --no-bar-phase).
     if args.bar_phase:

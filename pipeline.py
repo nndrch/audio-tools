@@ -184,6 +184,13 @@ Examples:
                     help="Viterbi self-transition prior (default: 0.35; higher = stickier).")
     cd.add_argument("--viterbi-cadence-boost", type=float, default=4.0, dest="viterbi_cadence_boost",
                     help="Viterbi cadence-transition multiplier (default: 4.0).")
+    # ── Phase 1 detection core (M1–M4), default-off ──
+    cd.add_argument("--analytic-beats", action="store_true", dest="analytic_beats",
+                    help="Exact analytic beat grid at the known tempo instead of the "
+                         "librosa tracker (Phase 1.1). Falls back to the tracker if no BPM.")
+    cd.add_argument("--reduced-vocab-decode", action="store_true", dest="reduced_vocab_decode",
+                    help="Decode chords on summed reduced-vocabulary posterior mass "
+                         "instead of argmax-then-simplify (Phase 1.2/1.3). Honours --add-7th.")
 
     # ── Stem splitter ────────────────────────────────────────
     stems = p.add_argument_group("Stem splitter")
@@ -552,6 +559,9 @@ def main() -> None:
         cmd += ["--viterbi-smoothing"]
         if args.viterbi_stay_prob != 0.35:    cmd += ["--viterbi-stay-prob", str(args.viterbi_stay_prob)]
         if args.viterbi_cadence_boost != 4.0: cmd += ["--viterbi-cadence-boost", str(args.viterbi_cadence_boost)]
+    # Phase 1 detection core (default-off)
+    if args.analytic_beats:                   cmd += ["--analytic-beats"]
+    if args.reduced_vocab_decode:             cmd += ["--reduced-vocab-decode"]
     # Beat-detector knobs (also used by chord_chart_render's own beat detection)
     if args.ts_window_factor != 0.15:         cmd += ["--ts-window-factor", str(args.ts_window_factor)]
     if args.librosa_start_bpm != 120.0:       cmd += ["--librosa-start-bpm", str(args.librosa_start_bpm)]

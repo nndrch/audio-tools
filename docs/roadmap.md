@@ -67,7 +67,7 @@ Branch `feat/chord-accuracy-eval-harness`. Stage 5 added levers but no way to *m
 - **Phase 0 — Validation harness:** `eval/score.py` (mir_eval recall scorer), `eval/run.py` (dataset runner + A/B deltas), the `--lab-out` pipeline hook, a DAW-agnostic annotation intake (`annotation-template.csv` → `import_chords.py` → scorer `.lab`), and a locked web test-arm for A/B. Verified end-to-end *except* it has no dataset yet, so it can't print a baseline number — the dataset is the one remaining blocker.
 - **Phase 4 — MusicXML output quality (P0/P1):** `kind`-corruption fix, tempo, composer-junk removal, Berklee kind-text, clef/barline, system breaks. Done first as a low-risk win.
 
-**In progress — Phase 1 (architectural core):** move from *argmax-then-collapse* to *decode on summed posterior mass* over an analytic beat grid. Milestones M1–M3 built and unit-tested (`analytic_beat_grid`, `beat_sync_posteriors`, `marginalize_to_reduced_vocab`); **M4 (reduced-vocab decode → `beat_chords`) is next**, then M5 wires it behind flags.
+**Phase 1 (architectural core) — wired, default-off:** moves from *argmax-then-collapse* to *decode on summed posterior mass* over an analytic beat grid. M1–M5 done — `analytic_beat_grid`, `beat_sync_posteriors`, `marginalize_to_reduced_vocab`, `reduced_vocab_decode`, all wired into `main()` behind `--analytic-beats` / `--reduced-vocab-decode` with the default path unchanged. **Pending: measure on the labelled dataset (the Phase 0 gate) — the win is validated, not assumed.**
 
 > Full milestone table and status live in [`chord-detection-progress.md`](chord-detection-progress.md); the design rationale is in [`chord-detection-implementation-plan.md`](chord-detection-implementation-plan.md).
 
@@ -76,7 +76,7 @@ Branch `feat/chord-accuracy-eval-harness`. Stage 5 added levers but no way to *m
 ## ⬜ Next stages
 
 ### Finish Stage 6 (chord detection)
-1. **Phase 1 core** — M4 (reduced-vocab decode) → M5 (wire behind `--analytic-beats` / `--reduced-vocab-decode`, default path unchanged).
+1. **Validate Phase 1** — M1–M5 are wired (default-off); run the harness on the labelled dataset and A/B `--analytic-beats` / `--reduced-vocab-decode` against the baseline, keeping only the variants that win.
 2. **Phase 2 — `--profile accuracy`** — promote the Stage 5 levers into one named profile with dependency wiring + conflict errors. Low risk, no new algorithms.
 3. **Self-improving harness** — baseline/champion store + `run.py --gate` + promote, so re-running as songs arrive auto-reports improve/regress (works at 0 songs).
 4. **Phase 1.4 — HPSS vs Demucs-harmonic input A/B**, decided by measurement on the dataset.

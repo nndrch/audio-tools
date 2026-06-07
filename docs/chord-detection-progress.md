@@ -119,7 +119,7 @@ Adding a new phase later follows the same shape: write the function → syntheti
 
 > **Design note (M3, from adversarial review).** Verification (verified against the live crema model) caught that crema emits **two** no-chord classes — `N` and `X` (unknown) — and `X` mass was being silently dropped, which would render a spurious chord on noisy beats. Fixed: `X`→`N` (the file-wide convention). Three contracts are now pinned for later milestones: **(M4)** beat *confidence* must be a normalised share (`winning_col / row_sum`), never the raw summed mass (which can exceed 1 and would break the 0.70–0.80 gates); **(M4)** the `add_7th` decode should be **two-stage** (win root on the `{maj,min}` view, then refine quality) to avoid the family-split regressing the root; **(M5)** must **not** re-run `simplify_chord()` on reduced labels (it would collapse `dim`→`min`, `sus`→`maj`).
 | M4 | reduced-vocab **decode** → `beat_chords` assembly | output dict shape/keys match `hybrid_bar_chords` input | ✅ 18/18 |
-| M5 | wire M1–M4 into `main()` behind `--analytic-beats` / `--reduced-vocab-decode` | compiles; default path byte-identical (flags off) | ⬜ |
+| M5 | wire M1–M4 into `main()` behind `--analytic-beats` / `--reduced-vocab-decode` | compiles; default path byte-identical (flags off) | ✅ 12/12 chain |
 | M6 | Phase 2 `--profile accuracy` first-class in pipeline/CLI + dep wiring | flag→flag-set mapping; conflict error with `--skip-stems`/`--skip-sections` | ⬜ |
 | M7 | self-improving harness: baseline/champion + `run.py --gate` + promote | synthetic results JSON → correct improve/regress verdict; works at 0 songs | ⬜ |
 | M8 | register Phase 1 & 3 eval profiles + extension points | profiles list + flags resolve | ⬜ |
