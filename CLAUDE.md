@@ -2,6 +2,17 @@
 
 Project-specific preferences for Claude Code working in this repo. These complement the global `~/.claude/CLAUDE.md`. **Store project-related preferences here, in this file — not in global memory.** When the user states a new project preference, add it here.
 
+## Repository structure & versions
+
+This repo holds **two parallel versions of the app** so their outputs can be compared:
+
+- **`master` — v1 (Stage 5), frozen baseline.** The detection-accuracy-levers release; it stays working and untouched. Do **not** land features here. Immutable reference: tag **`v1.0-stage5`**.
+- **`develop` — v2 (Stage 6+), the active line.** All new work (code *and* docs) lands here. Branch features as `feat/<name>` off `develop` and merge them back into `develop`.
+
+Running both side by side: v1 is checked out as a git worktree at **`../audio-tools-v1`** (detached at `v1.0-stage5`), sharing this checkout's venvs via symlink. To compare, run each with a distinct `--output-dir` (or `AUDIO_TOOLS_JOBS_DIR` for the web UI); the v2-only eval harness (`eval/run.py` + `eval/score.py`) can score v1 vs v2 over the same dataset.
+
+Only fast-forward `master` to `develop` (promoting v2 → v1) on an explicit decision — never silently.
+
 ## Markdown styling
 
 - Write prose as **one line per paragraph**. Never hard-wrap or fill prose at a fixed column — the editor soft-wraps for display.
