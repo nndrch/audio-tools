@@ -31,6 +31,53 @@ import subprocess
 import sys
 
 
+# ── Detection profiles ──────────────────────────────────────────────────────
+# A profile name → the correction-lever flags (argparse dests) it switches on.
+# These are all default-off `store_true` flags, so a profile simply turns them
+# on and composes with any flags the user also passes individually.
+#
+# The "accuracy" set mirrors eval/run.py's "accuracy" profile exactly, so the
+# eval harness A/Bs the same flag set the pipeline ships. It deliberately does
+# NOT touch --hpss-mode (the plan keeps `hpss` as the default and settles
+# drum-removal by measurement, §1.4).
+PROFILES: dict[str, tuple[str, ...]] = {
+    "accuracy": ("key_snap", "viterbi_smoothing", "section_consistency",
+                 "bass_anchor", "slash_chords"),
+}
+
+
+def apply_profile(args: argparse.Namespace) -> None:
+    """Switch on the lever flags for ``args.profile``, in place.
+
+    ``default`` is a no-op. Idempotent and composable: a flag already set by the
+    user stays set. Pure aside from mutating ``args`` — unit-testable with a
+    synthetic Namespace.
+    """
+    for dest in PROFILES.get(args.profile, ()):
+        setattr(args, dest, True)
+
+
+def dependency_error(args: argparse.Namespace) -> str | None:
+    """Return a clear error if the resolved flags need a stage the user disabled.
+
+    Run *after* ``apply_profile`` so it also catches dependencies pulled in by a
+    profile (e.g. ``--profile accuracy`` implies ``--bass-anchor`` → stems).
+    Returns ``None`` when everything is consistent.
+    """
+    src = " (enabled by --profile accuracy)" if args.profile == "accuracy" else ""
+    stems_dep = []
+    if args.hpss_mode == "hpss-no-drums": stems_dep.append("--hpss-mode=hpss-no-drums")
+    if args.bass_anchor:                  stems_dep.append("--bass-anchor")
+    if args.slash_chords:                 stems_dep.append("--slash-chords")
+    if stems_dep and args.skip_stems:
+        return (f"✗  {', '.join(stems_dep)}{src} needs stem splitting — the "
+                "bass/drums stems are produced before chord detection. Remove --skip-stems.")
+    if args.section_consistency and args.skip_sections:
+        return (f"✗  --section-consistency{src} needs section detection. "
+                "Remove --skip-sections.")
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Beat-stabilize → chord chart → stem split.",
@@ -75,6 +122,13 @@ Examples:
 
     # ── Chord chart ─────────────────────────────────────────
     chart = p.add_argument_group("Chord chart")
+    chart.add_argument("--profile",       default="default",
+                       choices=("default", *PROFILES), dest="profile",
+                       help="Detection profile. 'default' = fast (today's behaviour). "
+                            "'accuracy' = turn on the correction levers (bass-anchor, "
+                            "key-snap, viterbi-smoothing, section-consistency, slash-chords); "
+                            "needs stems + sections, so it adds a Demucs pass (slower). "
+                            "Individual --flags still compose on top.")
     chart.add_argument("--key",           default="auto",
                        help="Key signature e.g. 'f:minor', 'bes:major' (default: auto)")
     chart.add_argument("--time-sig",      type=int, default=None, dest="time_sig",
@@ -339,20 +393,20 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     title = args.title or input_base
 
-    # ── Validation for features that need stems before chord ───────────────
-    # `hpss-no-drums` (needs drums.wav), `bass-anchor` and `slash-chords`
-    # (both need bass.wav) require stems to be produced before the chord
-    # step.  Skip-stems makes this impossible — surface a clear error
-    # instead of silently degrading.
-    _stems_dependent = []
-    if args.hpss_mode == "hpss-no-drums": _stems_dependent.append("--hpss-mode=hpss-no-drums")
-    if args.bass_anchor:                  _stems_dependent.append("--bass-anchor")
-    if args.slash_chords:                 _stems_dependent.append("--slash-chords")
-    if _stems_dependent and args.skip_stems:
-        sys.exit(
-            f"✗  {', '.join(_stems_dependent)} requires stem splitting to be enabled "
-            "(needs the bass/drums stems before chord detection)."
-        )
+    # ── Resolve the detection profile, then validate dependencies ──────────
+    # `--profile accuracy` switches on the correction levers; this must run
+    # before the dependency check so a profile-implied flag (e.g. bass-anchor →
+    # needs the bass stem) is validated too. The levers that need stems
+    # (`hpss-no-drums`, `bass-anchor`, `slash-chords`) or sections
+    # (`section-consistency`) can't run if the user also asked to skip them —
+    # surface a clear error instead of silently degrading.
+    apply_profile(args)
+    if args.profile != "default":
+        print(f"[pipeline] Profile '{args.profile}': "
+              f"{', '.join('--' + d.replace('_', '-') for d in PROFILES[args.profile])}")
+    _dep_err = dependency_error(args)
+    if _dep_err:
+        sys.exit(_dep_err)
 
     # ── Global progress allocation ─────────────────────────
     # Default ranges: stabilize 0–10, chord 10–40, stems 40–100.
