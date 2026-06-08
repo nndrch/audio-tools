@@ -61,26 +61,30 @@ First wave of accuracy work — a toolbox of opt-in correction levers.
 
 ## 🔨 Current stage — Stage 6: Chord-accuracy eval harness + phased detection rework
 
-Branch `feat/chord-accuracy-eval-harness`. Stage 5 added levers but no way to *measure* whether any of them help. This stage builds the measurement gate and reworks the detection core on top of it, so the tool **self-improves as labelled songs are added** — every change ships behind a default-off flag and is gated on a measured win, never blocked on the dataset.
+Stage 5 added levers but no way to *measure* whether any of them help. This stage builds the measurement gate and reworks the detection core on top of it, so the tool **self-improves as labelled songs are added** — every change ships behind a default-off flag and is gated on a measured win, never blocked on the dataset.
 
 **Done & verified**
 - **Phase 0 — Validation harness:** `eval/score.py` (mir_eval recall scorer), `eval/run.py` (dataset runner + A/B deltas), the `--lab-out` pipeline hook, a DAW-agnostic annotation intake (`annotation-template.csv` → `import_chords.py` → scorer `.lab`), and a locked web test-arm for A/B. Verified end-to-end *except* it has no dataset yet, so it can't print a baseline number — the dataset is the one remaining blocker.
 - **Phase 4 — MusicXML output quality (P0/P1):** `kind`-corruption fix, tempo, composer-junk removal, Berklee kind-text, clef/barline, system breaks. Done first as a low-risk win.
+- **Chord-chart time slashes:** the per-beat staff fill now renders stemless *time slashes* (play in time; the rhythm is the player's) on both the PDF and MusicXML, replacing the stemmed rhythmic slashes that dictated an exact rhythm.
 
-**Phase 1 (architectural core) — wired, default-off:** moves from *argmax-then-collapse* to *decode on summed posterior mass* over an analytic beat grid. M1–M5 done — `analytic_beat_grid`, `beat_sync_posteriors`, `marginalize_to_reduced_vocab`, `reduced_vocab_decode`, all wired into `main()` behind `--analytic-beats` / `--reduced-vocab-decode` with the default path unchanged. **Pending: measure on the labelled dataset (the Phase 0 gate) — the win is validated, not assumed.**
+**Shipped behind default-off flags — accuracy win pending the dataset gate**
+- **Phase 1 (detection core), M1–M5:** moves from *argmax-then-collapse* to *decode on summed posterior mass* over an analytic beat grid (`analytic_beat_grid`, `beat_sync_posteriors`, `marginalize_to_reduced_vocab`, `reduced_vocab_decode`), wired into `main()` behind `--analytic-beats` / `--reduced-vocab-decode`; the default path is unchanged.
+- **Phase 2 — accuracy profile, M6:** `--profile accuracy` (in `pipeline.py`) turns on the Stage 5 levers as one named set — bass-anchor, key-snap, Viterbi, section-consistency, slash-chords (the same flag set the eval harness A/Bs) — with stems/sections dependency wiring and clear errors against `--skip-stems` / `--skip-sections`. `--profile default` is unchanged.
 
-> Full milestone table and status live in [`chord-detection-progress.md`](chord-detection-progress.md); the design rationale is in [`chord-detection-implementation-plan.md`](chord-detection-implementation-plan.md).
+Both await the Phase 0 measurement gate: each win is validated as labelled songs arrive, not assumed.
+
+> Full milestone table (M1–M9) and status live in [`chord-detection-progress.md`](chord-detection-progress.md); the design rationale is in [`chord-detection-implementation-plan.md`](chord-detection-implementation-plan.md).
 
 ---
 
 ## ⬜ Next stages
 
 ### Finish Stage 6 (chord detection)
-1. **Validate Phase 1** — M1–M5 are wired (default-off); run the harness on the labelled dataset and A/B `--analytic-beats` / `--reduced-vocab-decode` against the baseline, keeping only the variants that win.
-2. **Phase 2 — `--profile accuracy`** — promote the Stage 5 levers into one named profile with dependency wiring + conflict errors. Low risk, no new algorithms.
-3. **Self-improving harness** — baseline/champion store + `run.py --gate` + promote, so re-running as songs arrive auto-reports improve/regress (works at 0 songs).
-4. **Phase 1.4 — HPSS vs Demucs-harmonic input A/B**, decided by measurement on the dataset.
-5. **Phase 3 — Disagreement-aware dual model** — run madmom on all bars, arbitrate CREMA↔madmom disagreements with combined evidence. Sequenced last (highest regression risk).
+1. **Validate Phases 1 & 2** — both are wired (default-off); run the harness on the labelled dataset and A/B `--analytic-beats` / `--reduced-vocab-decode` and `--profile accuracy` against the baseline, keeping only what wins.
+2. **Self-improving harness (M7)** — baseline/champion store + `run.py --gate` + promote, so re-running as songs arrive auto-reports improve/regress (works at 0 songs). Then register the remaining eval profiles and a final compile/doc sweep (M8–M9).
+3. **Phase 1.4 — HPSS vs Demucs-harmonic input A/B**, decided by measurement on the dataset.
+4. **Phase 3 — Disagreement-aware dual model** — run madmom on all bars, arbitrate CREMA↔madmom disagreements with combined evidence. Sequenced last (highest regression risk).
 
 ### Stage 7 — Cloud worker / remote backend — *future*
 The eventual production target named in the web-MVP PRD: move the heavy Python worker off `localhost` to Modal / Replicate / a dedicated GPU box. The web UI's `web/lib/pipeline.ts` swap point is designed to host this version unchanged. Unlocks the deferred web-MVP open questions: sharable result URLs (needs auth + storage), concurrent jobs (real queue), per-stage timing, and pre-upload audio preview.
