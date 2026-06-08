@@ -10,6 +10,7 @@ Phase 0 of [`docs/chord-detection-implementation-plan.md`](../docs/chord-detecti
 | [`run.py`](run.py) | Run the chord step over the whole dataset under a flag profile, score each song, print a per-profile aggregate + A/B deltas. |
 | `dataset/` | The hand-labeled test set (you populate this — see below). |
 | `results/` | Auto-written run outputs + scores. Git-ignored. |
+| `champion.json` | The current best aggregate — the baseline `run.py --gate` compares against. Written by `run.py --promote`; **tracked in git** so the baseline is shared. |
 
 Both scripts run in **`venv_crema`** (it has `chord_chart_render.py`'s deps and `mir_eval`):
 
@@ -79,6 +80,10 @@ Labels are Harte shorthand — `root:quality`, e.g. `C:maj`, `A:min`, `G:7`, `F:
 # quick smoke run on the first 3 songs
 ./venv_crema/bin/python3.11 eval/run.py --profile default --limit 3
 
+# self-improving gate: set the baseline once, then gate candidates against it
+./venv_crema/bin/python3.11 eval/run.py --promote default     # establish the champion
+./venv_crema/bin/python3.11 eval/run.py --gate accuracy       # IMPROVE / REGRESS / NEUTRAL (+ exit code)
+
 # score a single pair directly
 ./venv_crema/bin/python3.11 eval/score.py ref.lab est.lab
 ```
@@ -103,3 +108,13 @@ Labels are Harte shorthand — `root:quality`, e.g. `C:maj`, `A:min`, `G:7`, `F:
 3. A/B it: `run.py --compare default <your-profile>`.
 4. Ship only if `majmin` / `sevenths` improve without regressing `root`/`seg`.
 5. The `results/*.json` files are your regression record.
+
+### Automated gate (self-improving)
+
+Instead of eyeballing the A/B table, let the harness apply step 4's rule and remember the result:
+
+1. **Establish the baseline once** — `run.py --promote default` writes `champion.json` (commit it).
+2. **Gate a candidate** — `run.py --gate <profile>` runs it, compares to the champion, and prints `IMPROVE` / `REGRESS` / `NEUTRAL`. It exits non-zero **only** on a regression (`majmin`/`sevenths` win with no `root`/`seg` regression = pass), so it drops straight into CI.
+3. **Promote the winner** — `run.py --promote <profile>` makes it the new champion.
+
+The gate works even at **0 songs** (verdict: *no data*, exit 0), and as the dataset grows it warns when the champion is stale (measured on a different song set — re-promote to refresh). `--gate-eps` tunes the noise dead-band (default `0.005`).

@@ -58,6 +58,85 @@ PROFILES: dict[str, list[str]] = {
 _NEEDS_BASS     = {"--bass-anchor", "--slash-chords"}
 _NEEDS_SECTIONS = {"--section-consistency"}
 
+# ── Self-improving gate (M7) ────────────────────────────────────────────────
+# The champion record is the current best aggregate we gate new candidates
+# against. It lives OUTSIDE results/ (which is git-ignored) so it can be tracked
+# in git as the shared regression baseline. `--promote` writes it; `--gate`
+# reads it. It starts life as the `default` baseline and is replaced by winners.
+CHAMPION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "champion.json")
+
+# The ship rule (eval/README.md §"Workflow for an accuracy change", step 4):
+# ship only if majmin/sevenths improve WITHOUT regressing root/seg.
+GATE_WIN_METRICS   = ("majmin", "sevenths")  # improvement here = a win
+GATE_GUARD_METRICS = ("root", "seg")         # must not regress
+# Exit codes so the gate is usable in scripts/CI: only a real regression fails.
+GATE_EXIT = {"improve": 0, "neutral": 0, "no_data": 0, "no_champion": 0, "regress": 1}
+
+
+def gate_decision(cand: dict | None, champ: dict | None, eps: float = 0.005) -> dict:
+    """Decide improve / regress / neutral from two `weighted` metric dicts.
+
+    Pure (no I/O) so it can be unit-tested with synthetic aggregates. `cand` and
+    `champ` are the `weighted` sub-dicts of a run aggregate ({metric: recall}).
+    `eps` is a dead-band that ignores measurement noise. Verdicts:
+      improve      — a win on majmin/sevenths (> eps) and no root/seg regression
+      regress      — root or seg dropped more than eps (guard fails; takes priority)
+      neutral      — within tolerance everywhere
+      no_data      — candidate scored no songs (e.g. empty dataset)
+      no_champion  — nothing to compare against yet (run --promote first)
+    """
+    if not cand:
+        return {"verdict": "no_data", "deltas": {},
+                "reasons": ["candidate scored no songs — nothing to gate"]}
+    if not champ:
+        return {"verdict": "no_champion", "deltas": {},
+                "reasons": ["no champion on record — run --promote to set the baseline"]}
+    deltas = {m: round(cand[m] - champ[m], 4) for m in cand if m in champ}
+    regressed = [m for m in GATE_GUARD_METRICS if deltas.get(m, 0.0) < -eps]
+    improved  = [m for m in GATE_WIN_METRICS  if deltas.get(m, 0.0) >  eps]
+    if regressed:
+        return {"verdict": "regress", "deltas": deltas,
+                "reasons": [f"{m} regressed {deltas[m]:+.4f} (beyond ±{eps})" for m in regressed]}
+    if improved:
+        return {"verdict": "improve", "deltas": deltas,
+                "reasons": [f"{m} improved {deltas[m]:+.4f}" for m in improved]
+                           + ["no root/seg regression"]}
+    return {"verdict": "neutral", "deltas": deltas,
+            "reasons": [f"no majmin/sevenths gain beyond ±{eps}; no root/seg regression"]}
+
+
+def compute_dataset_sig(songs: list[tuple[str, str]]) -> str:
+    """Short, stable signature of the song set so a stale champion (measured on a
+    different set) can be flagged. Order-independent — hashes the sorted stems."""
+    import hashlib
+    stems = sorted(os.path.splitext(os.path.basename(a))[0] for a, _ in songs)
+    return hashlib.sha1("\n".join(stems).encode()).hexdigest()[:12]
+
+
+def load_champion(path: str = CHAMPION_PATH) -> dict | None:
+    """Read the champion record, or None if there isn't one yet."""
+    if not os.path.isfile(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_champion(result: dict, n_songs: int, dataset_sig: str, stamp: str,
+                  path: str = CHAMPION_PATH) -> None:
+    """Persist a run's aggregate as the new champion baseline."""
+    agg = result.get("aggregate", {})
+    rec = {
+        "profile":     result["profile"],
+        "flags":       result["flags"],
+        "n_songs":     n_songs,
+        "dataset_sig": dataset_sig,
+        "promoted_at": stamp,
+        "weighted":    agg.get("weighted", {}),
+        "macro":       agg.get("macro", {}),
+    }
+    with open(path, "w") as f:
+        json.dump(rec, f, indent=2)
+
 
 def find_songs(dataset_dir: str) -> list[tuple[str, str]]:
     """Return [(audio_path, ref_lab_path)] for every audio file with a sibling .lab."""
@@ -226,6 +305,44 @@ def run_one_profile(name: str, flags: list[str], songs, work_root: str, prepare_
     return {"profile": name, "flags": flags, "songs": rows, "aggregate": aggregate(rows) if rows else {}}
 
 
+def _profile_flags(name: str) -> list[str]:
+    """Resolve a built-in profile name to its flag list, or exit with the list."""
+    if name not in PROFILES:
+        sys.exit(f"Unknown profile '{name}'. Known: {', '.join(PROFILES)}")
+    return PROFILES[name]
+
+
+def persist_results(out_dir: str, dataset: str, n_songs: int, results: list[dict]) -> str:
+    """Write a timestamped results JSON (the regression record) and return its path."""
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    label = "_".join(r["profile"] for r in results) or "run"
+    out_json = os.path.join(out_dir, f"{stamp}_{label}.json")
+    with open(out_json, "w") as f:
+        json.dump({"dataset": dataset, "n_songs": n_songs, "results": results}, f, indent=2)
+    return out_json
+
+
+def print_gate(profile: str, decision: dict, champ: dict | None,
+               dataset_sig: str, n_songs: int) -> None:
+    """Print the gate verdict, the per-metric deltas, and the reasons."""
+    icon = {"improve": "✅ IMPROVE", "regress": "❌ REGRESS", "neutral": "➖ NEUTRAL",
+            "no_data": "…  NO DATA", "no_champion": "…  NO CHAMPION"}[decision["verdict"]]
+    print(f"\n{'='*60}\n  GATE: '{profile}' vs champion  →  {icon}\n{'='*60}")
+    if champ and champ.get("dataset_sig") and champ["dataset_sig"] != dataset_sig:
+        print(f"  ⚠  champion was measured on a different song set "
+              f"({champ.get('n_songs', '?')} songs); current set is {n_songs}. "
+              f"Re-promote the baseline for an apples-to-apples comparison.")
+    if decision["deltas"]:
+        print("  Δ vs champion (duration-weighted recall):")
+        for m in REPORTED_METRICS:
+            if m in decision["deltas"]:
+                print(f"    {m:10}  {decision['deltas'][m]:+.4f}")
+    for r in decision["reasons"]:
+        print(f"  • {r}")
+    print()
+
+
 def print_table(results: list[dict]) -> None:
     metrics = [m for m in REPORTED_METRICS if m != "seg"] + ["seg"]
     # Per-profile aggregate (duration-weighted) side by side.
@@ -267,6 +384,15 @@ def parse_args() -> argparse.Namespace:
                    help="Shortcut for multiple --profile (prints deltas vs the first)")
     p.add_argument("--flags", default=None,
                    help="Ad-hoc flag string → an extra profile named 'custom'")
+    p.add_argument("--gate", metavar="PROFILE", default=None,
+                   help="Run PROFILE and compare it to the champion (eval/champion.json). "
+                        "Prints an improve/regress/neutral verdict; exits non-zero only on "
+                        "a regression. Works at 0 songs (verdict: no data).")
+    p.add_argument("--promote", metavar="PROFILE", default=None,
+                   help="Run PROFILE and save its aggregate as the new champion baseline.")
+    p.add_argument("--gate-eps", type=float, default=0.005, dest="gate_eps",
+                   help="Dead-band for the gate: deltas within ±eps count as no change "
+                        "(default: 0.005).")
     p.add_argument("--prepare-aux", action="store_true",
                    help="Pre-generate bass stem (venv_demucs) + sections (venv_allin1) when a profile needs them")
     p.add_argument("--limit", type=int, default=0, help="Only score the first N songs (0 = all)")
@@ -281,40 +407,60 @@ def main() -> None:
     if not os.path.isdir(args.dataset):
         sys.exit(f"Dataset dir not found: {args.dataset}\nSee eval/README.md for the expected layout.")
 
-    # Resolve which profiles to run.
+    songs = find_songs(args.dataset)
+    if args.limit:
+        songs = songs[: args.limit]
+    dataset_sig = compute_dataset_sig(songs)
+    work_root = os.path.join(args.out, "work")
+
+    # ── Mode: promote a profile's result to the champion baseline ─────────
+    if args.promote:
+        flags = _profile_flags(args.promote)
+        if not songs:
+            sys.exit("✗  nothing to promote: the dataset has 0 songs. Add labelled "
+                     "songs (see eval/README.md) before setting a baseline.")
+        res = run_one_profile(args.promote, flags, songs, work_root, args.prepare_aux)
+        if not res["aggregate"]:
+            sys.exit("✗  nothing to promote: no songs scored successfully.")
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        save_champion(res, len(res["songs"]), dataset_sig, stamp)
+        print_table([res])
+        print(f"  ✓ promoted '{args.promote}' as champion → {CHAMPION_PATH}")
+        print(f"    commit eval/champion.json to share this baseline.\n")
+        return
+
+    # ── Mode: gate a profile against the champion ─────────────────────────
+    if args.gate:
+        flags = _profile_flags(args.gate)
+        cand = run_one_profile(args.gate, flags, songs, work_root, args.prepare_aux)
+        champ = load_champion()
+        decision = gate_decision(cand["aggregate"].get("weighted"),
+                                 (champ or {}).get("weighted"), args.gate_eps)
+        print_gate(args.gate, decision, champ, dataset_sig, n_songs=len(cand["songs"]))
+        if songs:
+            persist_results(args.out, args.dataset, len(songs), [cand])
+        sys.exit(GATE_EXIT.get(decision["verdict"], 0))
+
+    # ── Default mode: run + score one or more profiles, print the A/B table ─
+    # Resolve (and validate) profiles before the dataset check so an unknown
+    # profile name is reported even on an empty dataset.
     names: list[str] = []
     names += args.compare or []
     names += args.profile
-    profiles: list[tuple[str, list[str]]] = []
-    for n in names:
-        if n not in PROFILES:
-            sys.exit(f"Unknown profile '{n}'. Known: {', '.join(PROFILES)}")
-        profiles.append((n, PROFILES[n]))
+    profiles: list[tuple[str, list[str]]] = [(n, _profile_flags(n)) for n in names]
     if args.flags is not None:
         profiles.append(("custom", args.flags.split()))
     if not profiles:
         profiles = [("default", PROFILES["default"])]
 
-    songs = find_songs(args.dataset)
-    if args.limit:
-        songs = songs[: args.limit]
     if not songs:
         sys.exit(f"No (audio, .lab) pairs found in {args.dataset}. See eval/README.md.")
     print(f"  dataset: {args.dataset}  ({len(songs)} song(s))")
 
-    work_root = os.path.join(args.out, "work")
     results = [run_one_profile(name, flags, songs, work_root, args.prepare_aux)
                for name, flags in profiles]
-
     print_table(results)
-
-    # Persist the full results for record-keeping / regression tracking.
-    os.makedirs(args.out, exist_ok=True)
-    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    label = "_".join(r["profile"] for r in results)
-    out_json = os.path.join(args.out, f"{stamp}_{label}.json")
-    with open(out_json, "w") as f:
-        json.dump({"dataset": args.dataset, "n_songs": len(songs), "results": results}, f, indent=2)
+    out_json = persist_results(args.out, args.dataset, len(songs), results)
     print(f"  results → {out_json}\n")
 
 

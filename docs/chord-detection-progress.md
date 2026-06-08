@@ -121,7 +121,7 @@ Adding a new phase later follows the same shape: write the function → syntheti
 | M4 | reduced-vocab **decode** → `beat_chords` assembly | output dict shape/keys match `hybrid_bar_chords` input | ✅ 18/18 |
 | M5 | wire M1–M4 into `main()` behind `--analytic-beats` / `--reduced-vocab-decode` | compiles; default path byte-identical (flags off) | ✅ 12/12 chain |
 | M6 | Phase 2 `--profile accuracy` first-class in pipeline/CLI + dep wiring | flag→flag-set mapping; conflict error with `--skip-stems`/`--skip-sections` | ✅ 15/15 |
-| M7 | self-improving harness: baseline/champion + `run.py --gate` + promote | synthetic results JSON → correct improve/regress verdict; works at 0 songs | ⬜ |
+| M7 | self-improving harness: baseline/champion + `run.py --gate` + promote | synthetic results JSON → correct improve/regress verdict; works at 0 songs | ✅ 21/21 + 0-songs E2E |
 | M8 | register Phase 1 & 3 eval profiles + extension points | profiles list + flags resolve | ⬜ |
 | M9 | final compile sweep + doc update | `py_compile` clean; this table filled in | ⬜ |
 
