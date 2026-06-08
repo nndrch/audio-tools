@@ -28,6 +28,22 @@ Only fast-forward `master` to `develop` (promoting v2 → v1) on an explicit dec
 - Work **one phase at a time**. After a phase is done, **stop and report** — never start the next phase without an explicit command from the user.
 - Follow the milestone routine: small, measurable, testable milestones; test new logic in isolation; everything default-off until a measured win. Stop after each completed milestone and report before starting the next.
 
+## Local app — start it after each milestone
+
+The "application" here is the local **web UI**: a Next.js dev server at `http://localhost:3000`. The CLI/pipeline is not a persistent service, so this routine is about the web UI only.
+
+After a milestone is finished **entirely** (built, tested in isolation, and reported per **Working in phases** above — not after each intermediate step), make sure that web UI is running on the local environment so the result can be tried immediately — don't leave the user to start it by hand:
+
+1. **Check** whether it's already up — `lsof -ti tcp:3000` (a PID means yes) or `curl -sf -o /dev/null http://localhost:3000`.
+2. **If it's up, leave it** — never restart it; a pipeline job may be in flight.
+3. **If it's not, start it in the background** (it's a long-running server), wait for it to come up, then report the URL:
+
+```bash
+cd web && npm run dev      # serves http://localhost:3000
+```
+
+Override the Python interpreter with `AUDIO_TOOLS_PYTHON` if the default isn't right (see [`docs/local-setup.md`](docs/local-setup.md)).
+
 ## New feature requests mid-development
 
 - If the user proposes a **new feature during development**, do not silently fold it into the current phase. Pause and weigh it explicitly, then decide *with the user* where it belongs:
